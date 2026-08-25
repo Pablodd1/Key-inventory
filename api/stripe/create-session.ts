@@ -26,9 +26,6 @@ function rateLimit(req: VercelRequest): boolean {
   return bucket.count <= MAX_REQUESTS;
 }
 
-const MIN_CENTS = 100; // $1.00 USD
-const MAX_CENTS = 500_000; // $5,000 USD
-
 function getBaseUrl(req: VercelRequest): string {
   const envUrl = process.env.APP_URL;
   if (envUrl) return envUrl.replace(/\/+$/, '');
