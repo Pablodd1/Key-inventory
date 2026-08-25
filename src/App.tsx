@@ -56,7 +56,11 @@ import {
   DollarSign,
   Save,
   Upload,
-  FlaskConical
+  FlaskConical,
+  MessageCircleQuestion,
+  Send as SendIcon,
+  Camera as CameraIcon,
+  Trash2
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -70,14 +74,16 @@ import {
 } from 'recharts';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
-import type { CarPreset, Client, DiagnosticRecord, InventoryItem, PaymentMethod } from './lib/types';
-import { PRESET_CAR_MODELS } from './data/presets';
+import type { CarPreset, Client, DiagnosticRecord, InventoryItem, PaymentMethod, PartUsage } from './lib/types';
+import { PRESET_CAR_MODELS, presetBrand, PRESET_BRAND_ORDER } from './data/presets';
 import {
   generateId,
   validateClientInput,
   validateInventoryItem,
   processItemSale,
   processSupplierRestock,
+  processPartsUsage,
+  normalizePartUsage,
   appendQuickNote,
   matchPresetByBrand,
   buildHistoryCsv,
@@ -103,8 +109,9 @@ import {
   StripeClientError,
 } from './lib/stripe';
 import { serializeBackup, parseBackup, downloadTextFile, BackupError } from './lib/backup';
-import { compressImage } from './lib/image';
+import { compressImage, compressThumbnail } from './lib/image';
 import { createDemoData } from './lib/demo';
+import { askAssistant, type ChatTurn } from './lib/aichat';
 
 declare global {
   interface Window {
@@ -267,7 +274,20 @@ function AddInventoryModal({ onAdd, onClose }: { onAdd: (item: Omit<InventoryIte
   const [stock, setStock] = useState(10);
   const [price, setPrice] = useState(50);
   const [barcode, setBarcode] = useState('');
+  const [photo, setPhoto] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
+
+  const handlePhotoPick = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const dataUrl = String(event.target?.result || '');
+      if (dataUrl) setPhoto(await compressThumbnail(dataUrl));
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -276,7 +296,8 @@ function AddInventoryModal({ onAdd, onClose }: { onAdd: (item: Omit<InventoryIte
       type,
       stock: Number(stock),
       price: Number(price),
-      barcode: barcode || Math.floor(100 + Math.random() * 900).toString()
+      barcode: barcode || Math.floor(100 + Math.random() * 900).toString(),
+      photo: photo || undefined,
     };
     const validation = validateInventoryItem(item);
     if (!validation.isValid) {
@@ -370,6 +391,30 @@ function AddInventoryModal({ onAdd, onClose }: { onAdd: (item: Omit<InventoryIte
             />
           </div>
 
+          <div>
+            <label className="block text-xs font-black text-[#FFFF00] uppercase mb-1">Foto de la Pieza (Opcional)</label>
+            {photo ? (
+              <div className="flex items-center gap-3 bg-black border-2 border-zinc-700 p-2.5">
+                <img src={photo} alt="Foto de la pieza" className="w-16 h-16 object-cover border border-zinc-600" />
+                <div className="flex-1">
+                  <p className="text-[10px] font-bold uppercase text-zinc-400">Miniatura guardada (se muestra en el inventario)</p>
+                  <button
+                    type="button"
+                    onClick={() => setPhoto(null)}
+                    className="text-xs font-bold text-red-500 uppercase underline mt-1 flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Quitar Foto
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <label className="w-full bg-zinc-800 text-white font-black uppercase py-3.5 border-2 border-zinc-600 hover:border-[#FFFF00] transition-colors text-center cursor-pointer flex items-center justify-center gap-2">
+                <CameraIcon className="w-5 h-5 text-[#FFFF00]" /> Tomar / Subir Foto
+                <input type="file" accept="image/*" capture="environment" onChange={handlePhotoPick} className="hidden" />
+              </label>
+            )}
+          </div>
+
           <button 
             type="submit" 
             className="w-full bg-[#FFFF00] text-black font-black uppercase py-4 text-lg hover:bg-white transition-colors shadow-[4px_4px_0px_#fff] mt-4"
@@ -423,6 +468,9 @@ function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClo
     if (record.notes) {
       text += `*Notas de Campo:* ${record.notes}\n`;
     }
+    if (record.partsUsed && record.partsUsed.length > 0) {
+      text += `*Piezas Usadas (Incluidas):* ${record.partsUsed.map(p => `${p.name} x${p.qty}`).join(', ')}\n`;
+    }
     text += `*Total Cobrado:* $${total.toFixed(2)} USD${record.paymentMethod ? ` (${record.paymentMethod.toUpperCase()})` : ''}\n\n` +
       `_¡Gracias por confiar en nuestros cerrajeros móviles! Garantía de 30 días en chips y mandos._`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
@@ -470,6 +518,12 @@ function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClo
             <div className="border-b border-zinc-200 pb-2 bg-amber-50 p-2 border border-amber-300">
               <span className="font-bold block mb-0.5 text-amber-950">NOTAS DEL TÉCNICO:</span>
               <p className="text-amber-950 font-semibold uppercase">{record.notes}</p>
+            </div>
+          )}
+          {record.partsUsed && record.partsUsed.length > 0 && (
+            <div className="border-b border-zinc-200 pb-2 bg-zinc-50 p-2 border border-zinc-300">
+              <span className="font-bold block mb-0.5 text-black">PIEZAS USADAS (INCLUIDAS EN EL PRECIO):</span>
+              <p className="font-semibold uppercase">{record.partsUsed.map(p => `${p.name} × ${p.qty}`).join(' • ')}</p>
             </div>
           )}
           <div className="flex justify-between items-center text-sm font-black pt-2 border-t-2 border-black">
@@ -1666,6 +1720,168 @@ function PaymentModal({
   );
 }
 
+// Chat de preguntas y respuestas con el asistente IA (Gemini multi-turno).
+// Para resolver dudas de vehículo en campo: ubicación OBD2, herramientas,
+// procedimientos, identificación por foto.
+function AiChatModal({ onClose }: { onClose: () => void }) {
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [question, setQuestion] = useState('');
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [turns, loading]);
+
+  const handlePhotoPick = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const dataUrl = String(event.target?.result || '');
+      if (dataUrl) setPhoto(await compressImage(dataUrl, 900, 0.7));
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSend = async () => {
+    const text = question.trim();
+    if (!text || loading) return;
+    setQuestion('');
+    setTurns(prev => [...prev, { role: 'user', text }]);
+    setLoading(true);
+    setError(null);
+    try {
+      const answer = await askAssistant({
+        history: turns,
+        question: text,
+        imageBase64: photo?.startsWith('data:image/') ? photo.split(',')[1] : undefined,
+      });
+      setPhoto(null);
+      setTurns(prev => [...prev, { role: 'model', text: answer }]);
+    } catch (err) {
+      setTurns(prev => prev.filter(t => !(t.role === 'user' && t.text === text)));
+      setQuestion(text);
+      setError(err instanceof GeminiError ? err.message : 'Error inesperado. Intente de nuevo.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[180] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md">
+      <div className="w-full sm:max-w-lg h-[85vh] sm:h-[80vh] bg-zinc-950 border-4 border-[#FFFF00] flex flex-col relative shadow-[8px_8px_0px_#FFFF00]">
+        <button
+          onClick={onClose}
+          className="absolute -top-6 -right-6 bg-red-500 text-white w-12 h-12 font-black border-4 border-black flex items-center justify-center hover:bg-red-400 transition-colors z-10"
+        >
+          <X className="w-6 h-6" />
+        </button>
+
+        <div className="p-4 border-b-4 border-zinc-800 bg-black shrink-0">
+          <h3 className="text-lg font-black uppercase text-[#FFFF00] tracking-widest flex items-center gap-2">
+            <MessageCircleQuestion className="w-5 h-5" /> Consulta IA — Cerrajería
+          </h3>
+          <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider mt-0.5">
+            Pregunte ubicaciones OBD2, herramientas Lishi, chips y procedimientos
+          </p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {turns.length === 0 && !loading && (
+            <div className="text-center py-8 space-y-2">
+              <MessageCircleQuestion className="w-10 h-10 text-zinc-700 mx-auto" />
+              <p className="text-xs font-black uppercase text-zinc-400">Ejemplos de consulta:</p>
+              {[
+                '¿Dónde está el puerto OBD2 de un Dodge Journey 2013?',
+                '¿Qué Lishi lleva un Hyundai Santa Fe 2011?',
+                'Civic 2014 no arranca tras cambiar batería, ¿qué reviso?',
+              ].map(q => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => setQuestion(q)}
+                  className="block w-full text-left bg-zinc-900 border border-zinc-700 hover:border-[#FFFF00] p-2.5 text-[11px] font-bold text-zinc-300 uppercase transition-colors"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {turns.map((turn, i) => (
+            <div key={i} className={`flex ${turn.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[85%] p-3 text-xs font-bold whitespace-pre-wrap uppercase leading-relaxed ${
+                  turn.role === 'user'
+                    ? 'bg-[#FFFF00] text-black border-2 border-black'
+                    : 'bg-zinc-900 text-zinc-200 border-2 border-zinc-700'
+                }`}
+              >
+                {turn.text}
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="flex items-center gap-2 text-xs font-black uppercase text-[#FFFF00]">
+              <RefreshCw className="w-4 h-4 animate-spin" /> Consultando al maestro…
+            </div>
+          )}
+          {error && (
+            <div className="bg-amber-950/40 border-2 border-amber-600/50 p-2.5 text-[11px] font-bold text-amber-200 uppercase">
+              {error}
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        <div className="p-3 border-t-4 border-zinc-800 bg-black space-y-2 shrink-0">
+          {photo && (
+            <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-700 p-1.5">
+              <img src={photo} alt="Foto adjunta" className="w-10 h-10 object-cover border border-zinc-600" />
+              <span className="text-[10px] font-bold uppercase text-zinc-400 flex-1">Foto se enviará con la pregunta</span>
+              <button type="button" onClick={() => setPhoto(null)} className="text-red-500 hover:text-red-400 p-1">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <label className="bg-zinc-800 border-2 border-zinc-600 hover:border-[#FFFF00] px-3 flex items-center cursor-pointer transition-colors shrink-0" title="Adjuntar foto">
+              <CameraIcon className="w-5 h-5 text-[#FFFF00]" />
+              <input type="file" accept="image/*" capture="environment" onChange={handlePhotoPick} className="hidden" />
+            </label>
+            <textarea
+              value={question}
+              onChange={e => setQuestion(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              rows={1}
+              placeholder="ESCRIBA SU PREGUNTA TÉCNICA…"
+              className="flex-1 bg-zinc-900 border-2 border-zinc-700 focus:border-[#FFFF00] p-2.5 text-xs font-bold text-white uppercase focus:outline-none resize-none"
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={loading || !question.trim()}
+              className="bg-[#FFFF00] disabled:bg-zinc-800 disabled:text-zinc-600 text-black px-4 font-black uppercase flex items-center justify-center border-2 border-black transition-colors shrink-0"
+            >
+              {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <SendIcon className="w-5 h-5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<'intake' | 'dashboard' | 'history'>('intake');
   
@@ -1692,6 +1908,8 @@ export default function App() {
   );
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
+  const [scanTarget, setScanTarget] = useState<'search' | 'parts'>('search');
   const [historySearchQuery, setHistorySearchQuery] = useState('');
   const [lastCreatedRecord, setLastCreatedRecord] = useState<DiagnosticRecord | null>(null);
   const [selectedTicketRecord, setSelectedTicketRecord] = useState<DiagnosticRecord | null>(null);
@@ -1719,6 +1937,32 @@ export default function App() {
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
 
+  // Piezas de inventario usadas en el servicio activo (se descuentan al cobrar)
+  const [partsUsed, setPartsUsed] = useState<PartUsage[]>([]);
+  const [partPickerId, setPartPickerId] = useState('');
+
+  const addPartToService = (itemId: string) => {
+    if (!itemId) return;
+    const item = inventory.find(i => i.id === itemId);
+    if (!item) return;
+    const alreadyPlanned = partsUsed.find(p => p.itemId === itemId)?.qty ?? 0;
+    if (item.stock - alreadyPlanned <= 0) {
+      setVoiceToastMessage(`⚠️ SIN STOCK DISPONIBLE: ${item.name}`);
+      return;
+    }
+    setPartsUsed(prev => normalizePartUsage([...prev, { itemId, name: item.name, qty: 1 }], inventory));
+    setPartPickerId('');
+  };
+
+  const changePartQty = (itemId: string, delta: number) => {
+    setPartsUsed(prev =>
+      normalizePartUsage(
+        prev.map(p => (p.itemId === itemId ? { ...p, qty: p.qty + delta } : p)),
+        inventory
+      ).filter(p => p.qty > 0)
+    );
+  };
+
   // Aviso cuando localStorage rechaza escrituras (cuota excedida, modo privado)
   const [storageWriteFailed, setStorageWriteFailed] = useState(false);
 
@@ -1726,6 +1970,9 @@ export default function App() {
   const [demoMode, setDemoMode] = useState<boolean>(() =>
     loadJson<boolean>(STORAGE_KEYS.demoMode, false, v => typeof v === 'boolean')
   );
+
+  // Chat de consultas IA (multi-turno)
+  const [aiChatOpen, setAiChatOpen] = useState(false);
 
   useEffect(() => {
     saveJson(STORAGE_KEYS.demoMode, demoMode);
@@ -2021,6 +2268,7 @@ export default function App() {
     setActiveClient(newClient);
     setDiagnosisText('');
     setAiError(null);
+    setPartsUsed([]);
     setView('dashboard');
   };
 
@@ -2039,6 +2287,7 @@ export default function App() {
     setActiveClient(defaultClient);
     setDiagnosisText('');
     setAiError(null);
+    setPartsUsed([]);
     setView('dashboard');
   };
 
@@ -2118,11 +2367,17 @@ export default function App() {
       amount,
       paymentMethod: method,
       stripeSessionId,
+      partsUsed: normalizePartUsage(partsUsed, inventory),
     };
   };
 
   const finalizePayment = (record: DiagnosticRecord) => {
     setRevenue(r => r + (record.amount ?? 0));
+    // Descontar del inventario las piezas usadas (incluidas en el precio del servicio)
+    if (record.partsUsed && record.partsUsed.length > 0) {
+      setInventory(prev => processPartsUsage(prev, record.partsUsed!));
+    }
+    setPartsUsed([]);
     setHistory(prev => [record, ...prev]);
     setLastCreatedRecord(record);
     setShowPaymentSuccess(true);
@@ -2295,8 +2550,23 @@ export default function App() {
   );
 
   const handleScan = (decodedText: string) => {
-    setSearchQuery(decodedText);
     setScannerOpen(false);
+    const match = inventory.find(i => i.barcode === decodedText);
+    if (scanTarget === 'parts') {
+      if (match) {
+        addPartToService(match.id);
+      } else {
+        setVoiceToastMessage(`⚠️ NINGÚN ÍTEM TIENE EL CÓDIGO "${decodedText}"`);
+      }
+      setScanTarget('search');
+      return;
+    }
+    setSearchQuery(decodedText);
+    if (match) {
+      setHighlightedItemId(match.id);
+      setVoiceToastMessage(`🔍 ÍTEM ENCONTRADO: ${match.name} — Stock: ${match.stock} u.`);
+      setTimeout(() => setHighlightedItemId(null), 4000);
+    }
   };
 
   return (
@@ -2323,6 +2593,22 @@ export default function App() {
           onManualPayment={handleRecordManualPayment}
           onCardPayment={handleCardPayment}
         />
+      )}
+
+      {aiChatOpen && <AiChatModal onClose={() => setAiChatOpen(false)} />}
+
+      {/* Botón flotante del asistente IA (visible en todas las vistas) */}
+      {!aiChatOpen && (
+        <div className="fixed bottom-20 right-4 md:bottom-24 md:right-6 z-50">
+          <button
+            type="button"
+            onClick={() => setAiChatOpen(true)}
+            aria-label="Consulta IA — preguntas técnicas de cerrajería"
+            className="bg-black text-[#FFFF00] border-4 border-[#FFFF00] w-14 h-14 flex items-center justify-center shadow-[4px_4px_0px_#FFFF00] hover:bg-zinc-900 transition-colors"
+          >
+            <MessageCircleQuestion className="w-7 h-7" />
+          </button>
+        </div>
       )}
 
       {/* Banner de modo demostración */}
@@ -2577,11 +2863,13 @@ export default function App() {
                     onChange={e => handlePresetSelect(e.target.value)}
                     className="w-full bg-black border-2 border-[#FFFF00] p-3 text-sm font-black text-white uppercase focus:outline-none cursor-pointer"
                   >
-                    <option value="">-- SELECCIONAR MODELO DESDE BASE DE DATOS TÉCNICA --</option>
-                    {PRESET_CAR_MODELS.map(preset => (
-                      <option key={preset.model} value={preset.model}>
-                        {preset.model} - Chip {preset.chip} ({preset.freq})
-                      </option>
+                    <option value="">-- SELECCIONAR MODELO DESDE BASE DE DATOS TÉCNICA ({PRESET_CAR_MODELS.length} FICHAS) --</option>
+                    {PRESET_BRAND_ORDER.map(brand => (
+                      PRESET_CAR_MODELS.filter(p => presetBrand(p) === brand).map(preset => (
+                        <option key={preset.model} value={preset.model}>
+                          {brand} · {preset.model} — Chip {preset.chip.split('(')[0].trim()}
+                        </option>
+                      ))
                     ))}
                   </select>
                 </div>
@@ -2780,7 +3068,7 @@ export default function App() {
                         className="w-full bg-zinc-900 border-2 border-zinc-700 pl-10 pr-4 py-2.5 font-black uppercase text-white focus:border-[#FFFF00] focus:outline-none text-xs"
                       />
                     </div>
-                    <button onClick={() => setScannerOpen(true)} className="bg-[#FFFF00] text-black px-4 flex items-center justify-center hover:bg-white transition-colors border-2 border-[#FFFF00]" title="Escanear Código de Barras">
+                    <button onClick={() => { setScanTarget('search'); setScannerOpen(true); }} className="bg-[#FFFF00] text-black px-4 flex items-center justify-center hover:bg-white transition-colors border-2 border-[#FFFF00]" title="Escanear Código de Barras">
                       <ScanLine className="w-5 h-5" />
                     </button>
                   </div>
@@ -2815,19 +3103,28 @@ export default function App() {
                           isLow 
                             ? 'bg-red-950/30 hover:bg-red-900/40 border-l-8 border-red-600' 
                             : 'bg-black hover:bg-zinc-900 border-l-8 border-[#FFFF00]'
-                        }`}
+                        } ${highlightedItemId === item.id ? 'ring-4 ring-[#FFFF00] animate-pulse' : ''}`}
                       >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="text-base font-black uppercase leading-tight">{item.name}</p>
-                            {isLow && (
-                              <span className="bg-red-600 text-white font-black text-[9px] px-1.5 py-0.5 uppercase tracking-wider animate-pulse border border-black">
-                                STOCK CRÍTICO
-                              </span>
-                            )}
+                        <div className="flex items-center gap-3 min-w-0">
+                          {item.photo ? (
+                            <img src={item.photo} alt={item.name} className="w-14 h-14 object-cover border-2 border-zinc-700 shrink-0" />
+                          ) : (
+                            <div className="w-14 h-14 bg-zinc-900 border-2 border-zinc-800 flex items-center justify-center shrink-0">
+                              <KeyRound className="w-6 h-6 text-zinc-600" />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-base font-black uppercase leading-tight truncate">{item.name}</p>
+                              {isLow && (
+                                <span className="bg-red-600 text-white font-black text-[9px] px-1.5 py-0.5 uppercase tracking-wider animate-pulse border border-black shrink-0">
+                                  STOCK CRÍTICO
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-[#FFFF00] font-bold tracking-widest mt-1.5 truncate">{item.type}</p>
+                            <p className="text-sm font-black mt-1">${item.price} USD{item.barcode ? <span className="text-zinc-500 font-bold text-xs"> · #{item.barcode}</span> : null}</p>
                           </div>
-                          <p className="text-xs text-[#FFFF00] font-bold tracking-widest mt-1.5">{item.type}</p>
-                          <p className="text-sm font-black mt-1">${item.price} USD</p>
                         </div>
                         <div className="text-right flex flex-col items-end shrink-0 ml-2">
                           <p className={`text-2xl md:text-3xl font-black ${isLow ? 'text-red-500 italic animate-pulse' : ''}`}>
@@ -2937,6 +3234,82 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                  </div>
+
+                  {/* Piezas de inventario usadas en este servicio */}
+                  <div className="bg-black p-3.5 border-2 border-zinc-700 space-y-2">
+                    <div className="flex flex-wrap justify-between items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <PackageCheck className="w-4 h-4 text-[#FFFF00]" />
+                        <span className="text-xs font-black uppercase text-[#FFFF00] tracking-wider">
+                          Piezas Usadas en Este Servicio
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setScanTarget('parts'); setScannerOpen(true); }}
+                        className="text-[10px] bg-zinc-900 text-zinc-300 hover:text-black hover:bg-[#FFFF00] border border-zinc-700 px-2 py-1 font-black uppercase tracking-wider flex items-center gap-1 transition-colors"
+                        title="Escanear código de la pieza"
+                      >
+                        <ScanLine className="w-3.5 h-3.5" /> Escanear Pieza
+                      </button>
+                    </div>
+
+                    <select
+                      value={partPickerId}
+                      onChange={e => addPartToService(e.target.value)}
+                      className="w-full bg-zinc-950 border-2 border-zinc-800 focus:border-[#FFFF00] p-2 text-xs font-bold text-[#FFFF00] uppercase focus:outline-none"
+                    >
+                      <option value="">+ AGREGAR PIEZA DEL INVENTARIO…</option>
+                      {inventory.filter(i => i.stock > 0).map(item => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} (Stock: {item.stock} u. — disponibles: {item.stock - (partsUsed.find(p => p.itemId === item.id)?.qty ?? 0)})
+                        </option>
+                      ))}
+                    </select>
+
+                    {partsUsed.length === 0 ? (
+                      <p className="text-[10px] text-zinc-600 font-bold uppercase">
+                        Se descuentan del stock al confirmar el cobro (incluidas en el precio del servicio).
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {partsUsed.map(part => {
+                          const available = (inventory.find(i => i.id === part.itemId)?.stock ?? 0) + part.qty;
+                          return (
+                            <div key={part.itemId} className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-2.5 py-1.5">
+                              <span className="text-xs font-black uppercase text-white truncate flex-1">{part.name}</span>
+                              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-700 shrink-0 ml-2">
+                                <button
+                                  type="button"
+                                  onClick={() => changePartQty(part.itemId, -1)}
+                                  className="text-white w-6 h-6 font-black hover:bg-zinc-800"
+                                >
+                                  −
+                                </button>
+                                <span className="text-xs font-black text-[#FFFF00] w-8 text-center">{part.qty}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => changePartQty(part.itemId, 1)}
+                                  disabled={part.qty >= available}
+                                  className="text-white w-6 h-6 font-black hover:bg-zinc-800 disabled:text-zinc-600"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setPartsUsed(prev => prev.filter(p => p.itemId !== part.itemId))}
+                                className="text-zinc-500 hover:text-red-500 p-1 transition-colors shrink-0"
+                                title="Quitar pieza"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -3170,6 +3543,16 @@ export default function App() {
                         <div>
                           <span className="text-[10px] font-black uppercase text-[#FFFF00] tracking-wider block">Observaciones del Técnico:</span>
                           <p className="text-xs font-bold text-zinc-300 uppercase">{record.notes}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {record.partsUsed && record.partsUsed.length > 0 && (
+                      <div className="mb-3 bg-zinc-950 border border-zinc-700 p-2.5 flex items-start gap-2">
+                        <PackageCheck className="w-4 h-4 text-[#FFFF00] shrink-0 mt-0.5" />
+                        <div>
+                          <span className="text-[10px] font-black uppercase text-[#FFFF00] tracking-wider block">Piezas Usadas (incluidas):</span>
+                          <p className="text-xs font-bold text-zinc-300 uppercase">{record.partsUsed.map(p => `${p.name} × ${p.qty}`).join(' • ')}</p>
                         </div>
                       </div>
                     )}

@@ -46,3 +46,11 @@ export async function compressImage(dataUrl: string, maxDim = 900, quality = 0.7
     return dataUrl;
   }
 }
+
+/**
+ * Miniatura para fotos de inventario: 200px JPEG calidad baja (~10KB c/u),
+ * suficiente para reconocer la pieza sin agotar la cuota de localStorage.
+ */
+export async function compressThumbnail(dataUrl: string): Promise<string> {
+  return compressImage(dataUrl, 200, 0.55);
+}
