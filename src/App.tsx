@@ -195,6 +195,7 @@ interface Client {
   issue: string;
   timestamp: string;
   location?: string;
+  notes?: string;
 }
 
 interface InventoryItem {
@@ -215,6 +216,7 @@ interface DiagnosticRecord {
   aiDiagnosis: string;
   status: string;
   image?: string | null;
+  notes?: string;
 }
 
 const INITIAL_INVENTORY: InventoryItem[] = [
@@ -535,14 +537,17 @@ function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClo
   };
 
   const handleShareWhatsApp = () => {
-    const text = `*MIAMI AUTO-KEY - TICKET DE SERVICIO MÓVIL*\n\n` +
+    let text = `*MIAMI AUTO-KEY - TICKET DE SERVICIO MÓVIL*\n\n` +
       `*Ticket #:* ${record.id ? record.id.slice(-6) : '000001'}\n` +
       `*Fecha:* ${record.date}\n` +
       `*Cliente:* ${record.client}\n` +
       `*Vehículo:* ${record.car}\n` +
       `*Trabajo:* ${record.issue}\n` +
-      `*Diagnóstico:* ${record.aiDiagnosis}\n` +
-      `*Total Cobrado:* $150.00 USD\n\n` +
+      `*Diagnóstico:* ${record.aiDiagnosis}\n`;
+    if (record.notes) {
+      text += `*Notas de Campo:* ${record.notes}\n`;
+    }
+    text += `*Total Cobrado:* $150.00 USD\n\n` +
       `_¡Gracias por confiar en nuestros cerrajeros móviles! Garantía de 30 días en chips y mandos._`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
@@ -585,6 +590,12 @@ function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClo
             <span className="font-bold block mb-0.5 text-black">DIAGNÓSTICO / TRABAJO REALIZADO:</span>
             <p className="text-zinc-900 font-semibold italic uppercase">{record.aiDiagnosis}</p>
           </div>
+          {record.notes && (
+            <div className="border-b border-zinc-200 pb-2 bg-amber-50 p-2 border border-amber-300">
+              <span className="font-bold block mb-0.5 text-amber-950">NOTAS DEL TÉCNICO:</span>
+              <p className="text-amber-950 font-semibold uppercase">{record.notes}</p>
+            </div>
+          )}
           <div className="flex justify-between items-center text-sm font-black pt-2 border-t-2 border-black">
             <span>TOTAL COBRADO:</span>
             <span className="text-lg">$150.00 USD</span>
@@ -1642,10 +1653,52 @@ function SupplierOrderModal({
 
 export default function App() {
   const [view, setView] = useState<'intake' | 'dashboard' | 'history'>('intake');
-  const [clients, setClients] = useState<Client[]>([]);
-  const [inventory, setInventory] = useState<InventoryItem[]>(INITIAL_INVENTORY);
-  const [history, setHistory] = useState<DiagnosticRecord[]>(INITIAL_HISTORY);
-  const [activeClient, setActiveClient] = useState<Client | null>(null);
+  
+  // LocalStorage-backed state with resilient fallbacks
+  const [clients, setClients] = useState<Client[]>(() => {
+    try {
+      const saved = localStorage.getItem('miami_autokey_clients');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [inventory, setInventory] = useState<InventoryItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('miami_autokey_inventory');
+      return saved ? JSON.parse(saved) : INITIAL_INVENTORY;
+    } catch {
+      return INITIAL_INVENTORY;
+    }
+  });
+
+  const [history, setHistory] = useState<DiagnosticRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('miami_autokey_history');
+      return saved ? JSON.parse(saved) : INITIAL_HISTORY;
+    } catch {
+      return INITIAL_HISTORY;
+    }
+  });
+
+  const [activeClient, setActiveClient] = useState<Client | null>(() => {
+    try {
+      const saved = localStorage.getItem('miami_autokey_active_client');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [revenue, setRevenue] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('miami_autokey_revenue');
+      return saved ? JSON.parse(saved) : 1450.50;
+    } catch {
+      return 1450.50;
+    }
+  });
   
   const [searchQuery, setSearchQuery] = useState('');
   const [historySearchQuery, setHistorySearchQuery] = useState('');
@@ -1661,11 +1714,61 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(true);
 
+  // Sync state changes to localStorage for roadside offline persistence
+  useEffect(() => {
+    try {
+      localStorage.setItem('miami_autokey_clients', JSON.stringify(clients));
+    } catch (e) {
+      console.error('Storage sync error (clients):', e);
+    }
+  }, [clients]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('miami_autokey_inventory', JSON.stringify(inventory));
+    } catch (e) {
+      console.error('Storage sync error (inventory):', e);
+    }
+  }, [inventory]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('miami_autokey_history', JSON.stringify(history));
+    } catch (e) {
+      console.error('Storage sync error (history):', e);
+    }
+  }, [history]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('miami_autokey_revenue', JSON.stringify(revenue));
+    } catch (e) {
+      console.error('Storage sync error (revenue):', e);
+    }
+  }, [revenue]);
+
+  useEffect(() => {
+    try {
+      if (activeClient) {
+        localStorage.setItem('miami_autokey_active_client', JSON.stringify(activeClient));
+      } else {
+        localStorage.removeItem('miami_autokey_active_client');
+      }
+    } catch (e) {
+      console.error('Storage sync error (activeClient):', e);
+    }
+  }, [activeClient]);
+
   // Hands-Free Voice Control state
   const [isVoiceModeEnabled, setIsVoiceModeEnabled] = useState(false);
   const isVoiceModeEnabledRef = useRef(false);
+  const activeClientRef = useRef<Client | null>(activeClient);
   const [voiceToastMessage, setVoiceToastMessage] = useState<string | null>(null);
   const [showVoiceHelpModal, setShowVoiceHelpModal] = useState(false);
+
+  useEffect(() => {
+    activeClientRef.current = activeClient;
+  }, [activeClient]);
 
   // Auto-dismiss voice toast notification
   useEffect(() => {
@@ -1679,7 +1782,6 @@ export default function App() {
 
   // Stripe / Payment modal
   const [showPaymentSuccess, setShowPaymentSuccess] = useState(false);
-  const [revenue, setRevenue] = useState(1450.50);
 
   const [showFieldGuideModal, setShowFieldGuideModal] = useState(false);
   const [showSupplierOrderModal, setShowSupplierOrderModal] = useState(false);
@@ -1814,11 +1916,14 @@ export default function App() {
         issue: prev.issue ? `${prev.issue} | ${rawTranscript.toUpperCase()}` : rawTranscript.toUpperCase()
       }));
 
-      if (activeClient) {
-        setActiveClient(prev => prev ? {
-          ...prev,
-          issue: prev.issue ? `${prev.issue} | ${rawTranscript.toUpperCase()}` : rawTranscript.toUpperCase()
-        } : null);
+      if (activeClientRef.current) {
+        const currentActive = activeClientRef.current;
+        const updatedIssue = currentActive.issue 
+          ? `${currentActive.issue} | ${rawTranscript.toUpperCase()}` 
+          : rawTranscript.toUpperCase();
+        const updatedClient: Client = { ...currentActive, issue: updatedIssue };
+        setActiveClient(updatedClient);
+        setClients(prev => prev.map(c => c.id === currentActive.id ? updatedClient : c));
       }
       setVoiceToastMessage(`🎙️ DICTADO AGREGADO: "${rawTranscript.toUpperCase()}"`);
     }
@@ -1870,10 +1975,18 @@ export default function App() {
       };
 
       recognitionRef.current = recognition;
+
+      return () => {
+        try {
+          recognition.abort();
+        } catch (e) {
+          console.error("Speech abort error:", e);
+        }
+      };
     } else {
       setSpeechSupported(false);
     }
-  }, [activeClient]);
+  }, []);
 
   const toggleSpeechRecognition = () => {
     if (!speechSupported) {
@@ -1944,6 +2057,20 @@ export default function App() {
     setView('dashboard');
   };
 
+  const handleUpdateClientNotes = (newNotes: string) => {
+    if (!activeClient) return;
+    const updatedClient: Client = { ...activeClient, notes: newNotes };
+    setActiveClient(updatedClient);
+    setClients(prev => prev.map(c => c.id === activeClient.id ? updatedClient : c));
+  };
+
+  const handleAppendQuickNote = (tag: string) => {
+    if (!activeClient) return;
+    const currentNotes = activeClient.notes || '';
+    const updatedNotes = currentNotes ? `${currentNotes} • ${tag}` : tag;
+    handleUpdateClientNotes(updatedNotes);
+  };
+
   const handleSell = (id: string) => {
     setInventory(prev => prev.map(item => {
       if (item.id === id && item.stock > 0) {
@@ -1978,6 +2105,7 @@ export default function App() {
       client: recordClient,
       car: recordCar,
       issue: recordIssue,
+      notes: activeClient?.notes,
       aiDiagnosis: capturedImage 
         ? 'IMAGEN CAPTURADA: CHIP TRANSPONDER E INMOVILIZADOR COMPATIBLE IDENTIFICADOS. CÓDIGO GENERADO EXITOSAMENTE.'
         : 'DIAGNÓSTICO MAESTRO REALIZADO. CÓDIGO BCM Y TRANSPONDER PROGRAMADOS SIN ADAPTACIONES EXTRA.',
@@ -1991,9 +2119,9 @@ export default function App() {
   };
 
   const exportCSV = () => {
-    const headers = ["ID,Fecha,Cliente,Vehiculo,Problema,Diagnostico,Estado\n"];
+    const headers = ["ID,Fecha,Cliente,Vehiculo,Problema,NotasTecnico,Diagnostico,Estado\n"];
     const rows = history.map(h => 
-      `"${h.id}","${h.date}","${h.client}","${h.car}","${h.issue.replace(/"/g, '""')}","${h.aiDiagnosis.replace(/"/g, '""')}","${h.status}"`
+      `"${h.id}","${h.date}","${h.client}","${h.car}","${h.issue.replace(/"/g, '""')}","${(h.notes || '').replace(/"/g, '""')}","${h.aiDiagnosis.replace(/"/g, '""')}","${h.status}"`
     );
     const blob = new Blob([headers.concat(rows.join("\n")).join("")], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -2514,6 +2642,67 @@ export default function App() {
                       carInfo={activeClient.carInfo}
                     />
                   )}
+
+                  {/* Dedicated Technician Notes Input Field */}
+                  <div className="bg-black p-3.5 border-2 border-zinc-700 space-y-2">
+                    <div className="flex flex-wrap justify-between items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-[#FFFF00]" />
+                        <label 
+                          htmlFor="technician-notes-input"
+                          className="text-xs font-black uppercase text-[#FFFF00] tracking-wider cursor-pointer"
+                        >
+                          Notas y Observaciones del Técnico
+                        </label>
+                        {activeClient.notes && (
+                          <span className="text-[9px] bg-emerald-950 text-emerald-400 border border-emerald-600 px-1.5 py-0.5 font-black uppercase tracking-wider flex items-center gap-1">
+                            <Check className="w-3 h-3 text-emerald-400" /> Guardado en Ficha
+                          </span>
+                        )}
+                      </div>
+                      {activeClient.notes && (
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateClientNotes('')}
+                          className="text-[10px] text-zinc-500 hover:text-red-400 uppercase font-black transition-colors"
+                        >
+                          Limpiar Notas
+                        </button>
+                      )}
+                    </div>
+
+                    <textarea
+                      id="technician-notes-input"
+                      rows={2}
+                      value={activeClient.notes || ''}
+                      onChange={(e) => handleUpdateClientNotes(e.target.value)}
+                      placeholder="Escriba notas específicas del vehículo (ej: 'Cilindro HU66 desgastado, chip ID48 virgen, corte Lishi, batería 12.4V, inmovilizador bloqueado...')..."
+                      className="w-full bg-zinc-950 border-2 border-zinc-800 focus:border-[#FFFF00] p-2.5 text-xs md:text-sm font-bold text-white uppercase focus:outline-none resize-y placeholder:text-zinc-600 rounded-none leading-relaxed transition-colors"
+                    />
+
+                    {/* Quick Roadside Observation Tags */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Atajos Rápidos:</span>
+                      {[
+                        'Chip ID48 Virgen',
+                        'Corte Lishi HU66',
+                        'Batería Baja (11.8V)',
+                        'Ignición Desgastada',
+                        'Inmo Sincronizado',
+                        'Alarma Desactivada',
+                        'Control Remoto OK'
+                      ].map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => handleAppendQuickNote(tag)}
+                          className="text-[10px] bg-zinc-900 text-zinc-300 hover:text-black hover:bg-[#FFFF00] border border-zinc-700 px-2 py-0.5 font-black uppercase transition-colors"
+                        >
+                          + {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -2672,7 +2861,17 @@ export default function App() {
                       <span className="text-sm font-black uppercase text-[#FFFF00]">{record.car}</span>
                     </div>
                     <p className="text-xl font-black uppercase mb-1">{record.client}</p>
-                    <p className="text-sm font-bold uppercase text-zinc-400 mb-4">Problema: {record.issue}</p>
+                    <p className="text-sm font-bold uppercase text-zinc-400 mb-2">Problema: {record.issue}</p>
+                    
+                    {record.notes && (
+                      <div className="mb-3 bg-zinc-950 border border-zinc-700 p-2.5 flex items-start gap-2">
+                        <FileText className="w-4 h-4 text-[#FFFF00] shrink-0 mt-0.5" />
+                        <div>
+                          <span className="text-[10px] font-black uppercase text-[#FFFF00] tracking-wider block">Observaciones del Técnico:</span>
+                          <p className="text-xs font-bold text-zinc-300 uppercase">{record.notes}</p>
+                        </div>
+                      </div>
+                    )}
                     
                     {record.image && (
                       <div className="mb-4">
