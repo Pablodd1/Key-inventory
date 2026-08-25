@@ -55,7 +55,8 @@ import {
   ShoppingBag,
   DollarSign,
   Save,
-  Upload
+  Upload,
+  FlaskConical
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -103,6 +104,7 @@ import {
 } from './lib/stripe';
 import { serializeBackup, parseBackup, downloadTextFile, BackupError } from './lib/backup';
 import { compressImage } from './lib/image';
+import { createDemoData } from './lib/demo';
 
 declare global {
   interface Window {
@@ -1720,6 +1722,15 @@ export default function App() {
   // Aviso cuando localStorage rechaza escrituras (cuota excedida, modo privado)
   const [storageWriteFailed, setStorageWriteFailed] = useState(false);
 
+  // Modo demostración: datos de prueba para explorar todos los flujos
+  const [demoMode, setDemoMode] = useState<boolean>(() =>
+    loadJson<boolean>(STORAGE_KEYS.demoMode, false, v => typeof v === 'boolean')
+  );
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.demoMode, demoMode);
+  }, [demoMode]);
+
   // Sync state changes to localStorage for roadside offline persistence
   useEffect(() => {
     if (!saveJson(STORAGE_KEYS.clients, clients)) setStorageWriteFailed(true);
@@ -2235,6 +2246,37 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  // ─── Modo demostración ───────────────────────────────────────────────────
+
+  const handleLoadDemo = () => {
+    const demo = createDemoData();
+    setClients(demo.clients);
+    setInventory(demo.inventory);
+    setHistory(demo.history);
+    setRevenue(demo.revenue);
+    setActiveClient(null);
+    setDemoMode(true);
+    setView('dashboard');
+    setVoiceToastMessage('🧪 DATOS DE DEMOSTRACIÓN CARGADOS — explore todos los flujos');
+  };
+
+  const handleExitDemo = () => {
+    const ok = window.confirm(
+      'Salir del modo demostración?\n\nSe BORRARÁN los datos de prueba (clientes, inventario, historial y ganancias) y la app quedará vacía para datos reales.'
+    );
+    if (!ok) return;
+    setClients([]);
+    setInventory([]);
+    setHistory([]);
+    setRevenue(0);
+    setActiveClient(null);
+    setCapturedImage(null);
+    setDiagnosisText('');
+    setDemoMode(false);
+    setView('intake');
+    setVoiceToastMessage('🧹 MODO DEMO FINALIZADO — app lista para datos reales');
+  };
+
   const reorderCount = inventory.filter(i => i.stock <= 3).length;
 
   const analytics = useMemo<AnalyticsSummary>(() => deriveAnalytics(history, revenue), [history, revenue]);
@@ -2281,6 +2323,23 @@ export default function App() {
           onManualPayment={handleRecordManualPayment}
           onCardPayment={handleCardPayment}
         />
+      )}
+
+      {/* Banner de modo demostración */}
+      {demoMode && (
+        <div className="bg-sky-600 text-white px-4 py-2 text-xs font-black uppercase tracking-wider flex items-center justify-between gap-3 shrink-0">
+          <span className="flex items-center gap-2 min-w-0">
+            <FlaskConical className="w-4 h-4 shrink-0" />
+            <span className="truncate">Modo Demostración — datos de prueba, no reales</span>
+          </span>
+          <button
+            type="button"
+            onClick={handleExitDemo}
+            className="bg-black text-[#FFFF00] px-3 py-1 font-black uppercase border border-black shrink-0"
+          >
+            Salir y Borrar Demo
+          </button>
+        </div>
       )}
 
       {/* Aviso de fallo de persistencia (cuota de localStorage excedida) */}
@@ -3068,8 +3127,28 @@ export default function App() {
             
             <div className="flex-1 overflow-y-auto divide-y-4 divide-zinc-900 border-4 border-zinc-800 bg-black">
               {filteredHistory.length === 0 ? (
-                <div className="p-8 text-center text-zinc-500 font-bold uppercase">
-                  No se encontraron registros que coincidan con "{historySearchQuery}"
+                <div className="p-8 text-center">
+                  {history.length === 0 ? (
+                    <>
+                      <FlaskConical className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
+                      <p className="text-sm font-black uppercase text-zinc-400">Aún no hay servicios registrados</p>
+                      <p className="text-xs text-zinc-600 mt-1 uppercase font-bold mb-4">
+                        Cargue datos de prueba para explorar todos los flujos de la app.
+                      </p>
+                      {!demoMode && (
+                        <button
+                          onClick={handleLoadDemo}
+                          className="bg-sky-600 text-white px-5 py-2.5 text-xs font-black uppercase tracking-widest border-2 border-black hover:bg-sky-500 transition-colors inline-flex items-center gap-2"
+                        >
+                          <FlaskConical className="w-4 h-4" /> Cargar Datos Demo
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-zinc-500 font-bold uppercase">
+                      No se encontraron registros que coincidan con "{historySearchQuery}"
+                    </p>
+                  )}
                 </div>
               ) : (
                 filteredHistory.map((record) => (
