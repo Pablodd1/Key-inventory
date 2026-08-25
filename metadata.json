@@ -1,0 +1,11 @@
+{
+  "name": "Miami Auto-Key ERP",
+  "description": "ERP, inventory management, and AI vehicle diagnostics for auto locksmiths and mechanics.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
