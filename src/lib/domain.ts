@@ -1,4 +1,4 @@
-import type { CarPreset, Client, DiagnosticRecord, InventoryItem } from './types';
+import type { CarPreset, Client, DiagnosticRecord, InventoryItem, PartUsage } from './types';
 
 // ─── Identificadores ────────────────────────────────────────────────────────
 
@@ -67,6 +67,49 @@ export function processSupplierRestock(
   });
 }
 
+// ─── Piezas usadas en un servicio ───────────────────────────────────────────
+
+/**
+ * Normaliza la lista de piezas de un servicio: agrega duplicados, respeta
+ * cantidades positivas y recorta al stock disponible.
+ */
+export function normalizePartUsage(parts: PartUsage[], inventory: InventoryItem[]): PartUsage[] {
+  const byItem = new Map<string, PartUsage>();
+  for (const part of parts) {
+    if (!part.itemId || part.qty <= 0) continue;
+    const existing = byItem.get(part.itemId);
+    byItem.set(part.itemId, {
+      itemId: part.itemId,
+      name: part.name,
+      qty: (existing?.qty ?? 0) + part.qty,
+    });
+  }
+  const normalized: PartUsage[] = [];
+  for (const part of byItem.values()) {
+    const item = inventory.find(i => i.id === part.itemId);
+    if (!item) continue; // el ítem fue borrado/desconocido
+    normalized.push({ ...part, qty: Math.min(part.qty, item.stock) });
+  }
+  return normalized;
+}
+
+/**
+ * Descuenta del inventario las piezas usadas en un servicio.
+ * Las piezas van incluidas en el precio del servicio (no suman ganancia);
+ * para ventas de mostrador existe VENDER (-1).
+ */
+export function processPartsUsage(
+  inventory: InventoryItem[],
+  parts: PartUsage[]
+): InventoryItem[] {
+  const usageMap = new Map(parts.map(p => [p.itemId, p.qty]));
+  return inventory.map(item => {
+    const qty = usageMap.get(item.id) || 0;
+    if (qty <= 0) return item;
+    return { ...item, stock: Math.max(0, item.stock - qty) };
+  });
+}
+
 // ─── Notas del técnico ──────────────────────────────────────────────────────
 
 export function appendQuickNote(currentNotes: string | undefined, tag: string): string {
@@ -83,8 +126,15 @@ const VOICE_BRAND_KEYWORDS: { brands: string[]; presetModel: string }[] = [
   { brands: ['ford'], presetModel: 'FORD F-150' },
   { brands: ['chevy', 'chevrolet'], presetModel: 'CHEVROLET CAMARO' },
   { brands: ['hyundai'], presetModel: 'HYUNDAI ELANTRA' },
+  { brands: ['kia'], presetModel: 'KIA FORTE' },
   { brands: ['jeep'], presetModel: 'JEEP GRAND CHEROKEE' },
+  { brands: ['ram'], presetModel: 'RAM 1500' },
+  { brands: ['dodge', 'caravan'], presetModel: 'DODGE JOURNEY' },
   { brands: ['volkswagen', 'vw'], presetModel: 'VOLKSWAGEN JETTA' },
+  { brands: ['mazda'], presetModel: 'MAZDA 3' },
+  { brands: ['mitsubishi'], presetModel: 'MITSUBISHI OUTLANDER' },
+  { brands: ['gmc', 'terrain'], presetModel: 'GMC TERRAIN' },
+  { brands: ['buick'], presetModel: 'BUICK ENCORE' },
 ];
 
 /**
@@ -109,7 +159,7 @@ function csvEscape(value: string | number | undefined | null): string {
 }
 
 export function buildHistoryCsv(records: DiagnosticRecord[]): string {
-  const header = 'ID,Fecha,Cliente,Vehiculo,Problema,NotasTecnico,Diagnostico,Estado,Monto,MetodoPago';
+  const header = 'ID,Fecha,Cliente,Vehiculo,Problema,NotasTecnico,Diagnostico,Estado,Monto,MetodoPago,PiezasUsadas';
   const rows = records.map(h =>
     [
       csvEscape(h.id),
@@ -122,6 +172,7 @@ export function buildHistoryCsv(records: DiagnosticRecord[]): string {
       csvEscape(h.status),
       csvEscape(h.amount != null ? h.amount.toFixed(2) : ''),
       csvEscape(h.paymentMethod || ''),
+      csvEscape((h.partsUsed || []).map(p => `${p.name} x${p.qty}`).join('; ')),
     ].join(',')
   );
   return [header, ...rows].join('\n');

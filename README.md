@@ -6,15 +6,16 @@ ERP web móvil (español) para **cerrajeros automotrices y mecánicos móviles**
 
 ## Funcionalidad (MVP en producción)
 
-1. **Registro de clientes en sitio** con validación de nombre/apellido/vehículo/teléfono, fichas técnicas de 8 modelos comunes y geocodificación en vivo (OpenStreetMap/Nominatim) con distancias, ETA y enlaces a Google Maps / Waze / WhatsApp.
-2. **Inventario físico**: alta/venta de ítems, alertas de stock bajo (<3), escáner de código de barras por cámara y generador de órdenes de reposición a proveedor (WhatsApp / portapapeles).
+1. **Registro de clientes en sitio** con validación de nombre/apellido/vehículo/teléfono, **catálogo de ~40 fichas técnicas** (Toyota, Honda, Nissan, Ford, Chevrolet, Hyundai, Kia, Jeep, Dodge, Ram, VW, Mazda, Mitsubishi, GMC, Buick) y geocodificación en vivo (OpenStreetMap/Nominatim) con distancias, ETA y enlaces a Google Maps / Waze / WhatsApp.
+2. **Inventario físico**: alta/venta de ítems **con foto identificable por pieza**, alertas de stock bajo (<3), escáner de código de barras (buscar ítem o agregarlo al servicio) y generador de órdenes de reposición a proveedor (WhatsApp / portapapeles). **Piezas usadas en el servicio**: se descuentan del stock al cobrar y quedan listadas en el ticket e historial.
 3. **Diagnóstico asistido por IA (Gemini)**: botón "Generar con IA" que envía el contexto del servicio (vehículo, falla, notas del técnico y foto opcional) a `POST /api/gemini` — proxy serverless que mantiene la clave API fuera del navegador. El resultado es **editable** y siempre se puede escribir manualmente si la IA no está configurada.
-4. **Cobros reales**: modal de cobro con monto editable y tres métodos:
+4. **Consulta IA (chat multi-turno)**: botón flotante en todas las vistas para resolver dudas técnicas en campo (ubicación OBD2, herramienta Lishi, chips) con contexto de conversación y foto opcional.
+5. **Cobros reales**: modal de cobro con monto editable y tres métodos:
    - **Efectivo** y **Zelle**: registro directo.
    - **Tarjeta**: Stripe Checkout real (redirección + verificación del pago del lado del servidor al volver). Queda deshabilitado con mensaje claro si `STRIPE_SECRET_KEY` no está configurada.
-5. **Historial y tickets**: búsqueda, exportación CSV, respaldo/restauración JSON completa, ticket imprimible de 80mm y resumen por WhatsApp.
-6. **Analíticas reales**: gráficos y KPIs (servicios, ingresos, ticket promedio, categoría top) calculados desde el historial real — sin datos falsos.
-7. **Voz manos libres** (Web Speech API, es-US): navegación, acciones rápidas y fichas por marca ("toyota", "ford", "vw"...).
+6. **Historial y tickets**: búsqueda, exportación CSV (incluye piezas usadas), respaldo/restauración JSON completa, ticket imprimible de 80mm y resumen por WhatsApp. **Modo demo** con datos de prueba para explorar todos los flujos.
+7. **Analíticas reales**: gráficos y KPIs (servicios, ingresos, ticket promedio, categoría top) calculados desde el historial real — sin datos falsos.
+8. **Voz manos libres** (Web Speech API, es-US): navegación, acciones rápidas y fichas por marca ("toyota", "ford", "vw"...).
 
 ## Persistencia y respaldo (importante)
 

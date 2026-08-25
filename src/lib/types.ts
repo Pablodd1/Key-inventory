@@ -32,6 +32,15 @@ export interface InventoryItem {
   stock: number;
   price: number;
   barcode: string;
+  /** Miniatura JPEG (~200px) para identificar la pieza visualmente */
+  photo?: string;
+}
+
+/** Pieza de inventario consumida durante un servicio */
+export interface PartUsage {
+  itemId: string;
+  name: string;
+  qty: number;
 }
 
 export type PaymentMethod = 'tarjeta' | 'efectivo' | 'zelle';
@@ -50,6 +59,7 @@ export interface DiagnosticRecord {
   amount?: number;
   paymentMethod?: PaymentMethod;
   stripeSessionId?: string;
+  partsUsed?: PartUsage[];
 }
 
 export interface AppData {
