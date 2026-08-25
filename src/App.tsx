@@ -2285,9 +2285,10 @@ export default function App() {
               <form onSubmit={handleRegister} className="mt-4 space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-xs font-black text-[#FFFF00] uppercase tracking-widest mb-2">Nombre</label>
+                    <label className="block text-xs font-black text-[#FFFF00] uppercase tracking-widest mb-2">Nombre *</label>
                     <input 
                       type="text" 
+                      required
                       value={formData.firstName}
                       onChange={e => setFormData({...formData, firstName: e.target.value})}
                       className="w-full bg-black border-4 border-zinc-800 p-4 font-bold focus:border-[#FFFF00] focus:outline-none transition-colors text-white uppercase"
@@ -2295,9 +2296,10 @@ export default function App() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-black text-[#FFFF00] uppercase tracking-widest mb-2">Apellido</label>
+                    <label className="block text-xs font-black text-[#FFFF00] uppercase tracking-widest mb-2">Apellido *</label>
                     <input 
                       type="text" 
+                      required
                       value={formData.lastName}
                       onChange={e => setFormData({...formData, lastName: e.target.value})}
                       className="w-full bg-black border-4 border-zinc-800 p-4 font-bold focus:border-[#FFFF00] focus:outline-none transition-colors text-white uppercase"
