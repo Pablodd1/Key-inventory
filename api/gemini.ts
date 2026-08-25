@@ -1,12 +1,36 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GoogleGenAI } from '@google/genai';
-import { rateLimit } from '../server/ratelimit';
 
 // Serverless proxy to keep GEMINI_API_KEY server-side.
 // Client: POST /api/gemini { prompt: string, imageBase64?: string, mimeType?: string, history?: {role:string, parts:{text:string}[]}[] }
+// NOTA: sin imports relativos locales — el runtime ESM de las funciones no
+// resuelve especificadores sin extensión y @vercel/node no los empaqueta.
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
+
+// Rate limit en memoria por instancia cálida (mejor esfuerzo).
+const WINDOW_MS = 60_000;
+const MAX_REQUESTS = 30;
+const buckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimit(req: VercelRequest): boolean {
+  const fwd = req.headers['x-forwarded-for'];
+  const ip = (typeof fwd === 'string' && fwd.length > 0 ? fwd.split(',')[0].trim() : '') || 'unknown';
+  const now = Date.now();
+  const bucket = buckets.get(ip);
+  if (!bucket || now >= bucket.resetAt) {
+    buckets.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    return true;
+  }
+  bucket.count += 1;
+  if (buckets.size > 5000) {
+    for (const [k, b] of buckets) {
+      if (now >= b.resetAt) buckets.delete(k);
+    }
+  }
+  return bucket.count <= MAX_REQUESTS;
+}
 
 interface ChatTurn {
   role: string;
@@ -20,7 +44,7 @@ function sanitizeHistory(history: unknown): ChatTurn[] {
       (turn): turn is ChatTurn =>
         turn !== null &&
         typeof turn === 'object' &&
-        (turn as any).role === ((turn as any).role === 'model' ? 'model' : 'user') &&
+        typeof (turn as any).role === 'string' &&
         Array.isArray((turn as any).parts)
     )
     .slice(-10) // solo las últimas 10 iteraciones para acotar costos
@@ -40,7 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed, use POST' });
   }
-  if (!rateLimit(req, 'gemini')) {
+  if (!rateLimit(req)) {
     return res.status(429).json({ error: 'Too many requests' });
   }
 
