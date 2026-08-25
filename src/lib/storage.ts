@@ -6,6 +6,7 @@ export const STORAGE_KEYS = {
   history: 'miami_autokey_history',
   revenue: 'miami_autokey_revenue',
   activeClient: 'miami_autokey_active_client',
+  diagnosisDraft: 'miami_autokey_diagnosis_draft',
 } as const;
 
 function isRecordArray(v: unknown): boolean {

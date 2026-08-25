@@ -1704,7 +1704,10 @@ export default function App() {
   const [speechSupported, setSpeechSupported] = useState(true);
 
   // Estado de la IA: diagnóstico editable con generación asistida
-  const [diagnosisText, setDiagnosisText] = useState('');
+  // (se persiste como borrador para no perderlo al recargar en campo)
+  const [diagnosisText, setDiagnosisText] = useState<string>(() =>
+    loadJson<string>(STORAGE_KEYS.diagnosisDraft, '', v => typeof v === 'string')
+  );
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
@@ -1741,6 +1744,10 @@ export default function App() {
       removeKey(STORAGE_KEYS.activeClient);
     }
   }, [activeClient]);
+
+  useEffect(() => {
+    if (!saveJson(STORAGE_KEYS.diagnosisDraft, diagnosisText)) setStorageWriteFailed(true);
+  }, [diagnosisText]);
 
   // Hands-Free Voice Control state
   const [isVoiceModeEnabled, setIsVoiceModeEnabled] = useState(false);
@@ -2037,13 +2044,12 @@ export default function App() {
   };
 
   const handleSell = (id: string) => {
-    setInventory(prev => {
-      const { updatedInventory, soldItem } = processItemSale(prev, id);
-      if (soldItem) {
-        setRevenue(r => r + soldItem.price);
-      }
-      return updatedInventory;
-    });
+    // El incremento de ganancia va FUERA del updater de inventario:
+    // React (StrictMode) puede invocar los updaters dos veces y duplicaría el cargo.
+    const soldItem = inventory.find(i => i.id === id && i.stock > 0);
+    if (!soldItem) return;
+    setInventory(prev => processItemSale(prev, id).updatedInventory);
+    setRevenue(r => r + soldItem.price);
   };
 
   const handleAddInventory = (newItem: Omit<InventoryItem, 'id'>) => {
@@ -2901,7 +2907,7 @@ export default function App() {
               </div>
 
               {/* Main AI Diagnostic Viewport */}
-              <div className="flex-1 border-4 border-dashed border-zinc-700 p-6 md:p-8 flex flex-col relative bg-zinc-950 min-h-[300px]">
+              <div className="border-4 border-dashed border-zinc-700 p-6 md:p-8 flex flex-col relative bg-zinc-950 min-h-[300px]">
                 <div className="absolute -top-4 left-6 bg-black px-2">
                   <span className="text-[#FFFF00] font-black uppercase tracking-widest text-xs md:text-sm flex items-center gap-2">
                     <Sparkles className="w-4 h-4" /> Diagnóstico Asistido por IA (Gemini)
