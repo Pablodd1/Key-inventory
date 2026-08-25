@@ -1,0 +1,71 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { GoogleGenAI } from '@google/genai';
+
+// Serverless proxy to keep GEMINI_API_KEY server-side.
+// Client: POST /api/gemini { prompt: string, imageBase64?: string, mimeType?: string, history?: {role:string, parts:{text:string}[]}[] }
+
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'Method not allowed, use POST' });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'Server misconfigured: GEMINI_API_KEY not set' });
+  }
+
+  const { prompt, imageBase64, mimeType, history } = req.body ?? {};
+
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'Missing required field: prompt (string)' });
+  }
+
+  // Basic abuse guardrail: limit prompt + image size
+  if (prompt.length > 8000) {
+    return res.status(400).json({ error: 'Prompt too long (max 8000 chars)' });
+  }
+  if (imageBase64 && imageBase64.length > 7_000_000) {
+    return res.status(400).json({ error: 'Image too large (max ~5MB base64)' });
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+
+    // Build contents: support optional vision input for blade/immobilizer inspection
+    const parts: any[] = [{ text: prompt }];
+    if (imageBase64) {
+      parts.push({
+        inlineData: {
+          mimeType: mimeType || 'image/jpeg',
+          data: imageBase64.replace(/^data:[^;]+;base64,/, ''),
+        },
+      });
+    }
+
+    const contents = history && Array.isArray(history) && history.length > 0
+      ? [...history, { role: 'user', parts }]
+      : [{ role: 'user', parts }];
+
+    const result = await ai.models.generateContent({
+      model: MODEL,
+      contents,
+      config: {
+        // Keep field ops safe and concise
+        temperature: 0.4,
+        maxOutputTokens: 2048,
+      },
+    });
+
+    const text = (result as any).text ?? (result as any).candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+    return res.status(200).json({ text, model: MODEL });
+  } catch (err: any) {
+    console.error('[api/gemini] error', err);
+    const message = err?.message || 'Gemini request failed';
+    // Don't leak raw API key errors
+    return res.status(500).json({ error: message.slice(0, 500) });
+  }
+}
