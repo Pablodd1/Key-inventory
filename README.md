@@ -1,105 +1,94 @@
-# Miami Auto-Key ERP & Field Diagnostic System
+# Miami Auto-Key ERP — MVP de Producción
 
-A mobile-first Web ERP, real-time inventory management system, and roadside diagnostic tool suite tailored for **Automotive Locksmiths & Mobile Mechanics** operating in South Florida and urban dispatch zones.
+ERP web móvil (español) para **cerrajeros automotrices y mecánicos móviles** en Miami: registro de clientes en calle, inventario de llaves/transponders, diagnóstico asistido por IA, cobros y historial de servicios.
 
----
+> **Alcance**: este sistema gestiona **llaves físicas de automóviles** (blanks transponder, fobs, espadas láser, herramientas Lishi), NO claves de software.
 
-## 🔑 Key Scope Clarification: Physical vs. Software Keys
+## Funcionalidad (MVP en producción)
 
-> **CRITICAL ARCHITECTURAL DISTINCTION:**  
-> This system manages **PHYSICAL AUTOMOTIVE HARDWARE & TRANSPONDER BLANKS**, **NOT** cryptographic server secret keys, API credentials, or digital software license tokens.
+1. **Registro de clientes en sitio** con validación de nombre/apellido/vehículo/teléfono, fichas técnicas de 8 modelos comunes y geocodificación en vivo (OpenStreetMap/Nominatim) con distancias, ETA y enlaces a Google Maps / Waze / WhatsApp.
+2. **Inventario físico**: alta/venta de ítems, alertas de stock bajo (<3), escáner de código de barras por cámara y generador de órdenes de reposición a proveedor (WhatsApp / portapapeles).
+3. **Diagnóstico asistido por IA (Gemini)**: botón "Generar con IA" que envía el contexto del servicio (vehículo, falla, notas del técnico y foto opcional) a `POST /api/gemini` — proxy serverless que mantiene la clave API fuera del navegador. El resultado es **editable** y siempre se puede escribir manualmente si la IA no está configurada.
+4. **Cobros reales**: modal de cobro con monto editable y tres métodos:
+   - **Efectivo** y **Zelle**: registro directo.
+   - **Tarjeta**: Stripe Checkout real (redirección + verificación del pago del lado del servidor al volver). Queda deshabilitado con mensaje claro si `STRIPE_SECRET_KEY` no está configurada.
+5. **Historial y tickets**: búsqueda, exportación CSV, respaldo/restauración JSON completa, ticket imprimible de 80mm y resumen por WhatsApp.
+6. **Analíticas reales**: gráficos y KPIs (servicios, ingresos, ticket promedio, categoría top) calculados desde el historial real — sin datos falsos.
+7. **Voz manos libres** (Web Speech API, es-US): navegación, acciones rápidas y fichas por marca ("toyota", "ford", "vw"...).
 
-### Managed Physical Key Types & Hardware Catalog:
-* **Transponder Key Blanks**: RFID microchip transponders (Megamos Crypto ID48, Philips Crypto ID46 / PCF7936, Hitag2, 4D63 80-Bit, Texas Crypto).
-* **Remote Flip Keys & Keyless FOBs**: 3-button, 4-button, and 5-button smart remote keys (315MHz / 433.92MHz / 868MHz / 902MHz).
-* **Mechanical Key Blades**: Edge-cut blades (TR47, B102, H75, FO38) and high-security laser/sidewinder internal track blanks (HU66, HON66, HU100, HU101, VA2, HY22).
-* **Locksmith Tools**: Lishi 2-in-1 decoders, OBD2 key programming consoles (Autel IM508/IM608, Xhorse Key Tool Max / KM100), and mini automated CNC cutting machines.
+## Persistencia y respaldo (importante)
 
----
+El MVP guarda todo en **localStorage del navegador** (por dispositivo/origen). Para no perder datos de negocio:
 
-## 🚀 Key Functional Capabilities
+- Botón **"Respaldar Todo"** (Historial) exporta un JSON con clientes + inventario + historial + ganancias.
+- **"Restaurar"** reimporta un respaldo con validación y confirmación.
+- Las fotos se comprimen automáticamente (~900px JPEG) para no agotar la cuota de localStorage, y si una escritura falla aparece un aviso con botón de descarga inmediata del respaldo.
 
-1. **Client Roadside Intake & Live Geocoding**:
-   * Instant roadside customer logging with quick presets (Corolla, Civic, Sentra, F-150, Golf Immo4).
-   * Real-time GPS geocoding via OpenStreetMap / Nominatim with technician distance, ETA calculation, and instant links to Google Maps, Waze, Apple Maps, and WhatsApp.
-2. **Technician Live Field Notes & Rapid Diagnostic Tags**:
-   * Dedicated in-session notes editor with one-tap quick diagnostic tags (`+ Chip ID48 Virgen`, `+ Corte Lishi HU66`, `+ Batería Baja (11.8V)`).
-   * Notes automatically sync to client profiles, thermal print receipts, WhatsApp dispatches, and CSV archives.
-3. **Hardware Stock Tracking & Low-Stock Alerts**:
-   * Barcode/QR code scanner integration via camera.
-   * Auto-detection of critically low inventory ($\le 3$ units) with pulsing visual status.
-   * **Supplier Replenishment Generator**: Generates formatted wholesale purchase orders with 60% wholesale pricing estimates and single-click WhatsApp vendor ordering.
-4. **Hands-Free Spanish Voice Control**:
-   * Speech recognition listening for field dispatch commands (`"nuevo cliente"`, `"añadir inventario"`, `"generar pedido"`, `"cobrar"`, `"guía de campo"`).
-5. **AI Vehicle Diagnostic & Visual Blade Inspection**:
-   * Real-time image capture for immobilizer module and key blade inspection.
-   * Built-in interactive field manual covering Lishi pick procedures, OBD2 diagnostic port locations, and BCM-to-PIN code bypasses.
-6. **Billing & Thermal Receipt Generation**:
-   * Stripe-ready charge modal.
-   * Printable 80mm thermal receipt generator and pre-formatted WhatsApp service summary.
+Migración a base de datos en la nube (Supabase/Postgres) = siguiente etapa del roadmap (`ROADMAP.md`).
 
----
+## Desarrollo local
 
-## 🛠️ Local Development & Quick Start
-
-### Prerequisites
-* Node.js v18.0.0 or higher
-* npm or bun package manager
-
-### 1. Installation
 ```bash
-# Clone repository
-git clone https://github.com/your-org/miami-autokey-erp.git
-cd miami-autokey-erp
-
-# Install dependencies
 npm install
+npm run dev        # http://localhost:3000 (solo frontend; /api/* requiere Vercel)
 ```
 
-### 2. Environment Variables Configuration
-Copy `.env.example` to `.env` (the `.env` file is git-ignored):
 ```bash
-cp .env.example .env
+npm run lint       # typecheck (tsc --noEmit)
+npm test           # suite Vitest (40 tests de lógica de dominio)
+npm run build      # build de producción a dist/
 ```
 
-| Variable | Required | Description |
+Para probar las funciones serverless localmente: `vercel dev`.
+
+## Variables de entorno (Vercel → Settings → Environment Variables)
+
+| Variable | Requerida | Descripción |
 | :--- | :--- | :--- |
-| `GEMINI_API_KEY` | Optional | Google Gemini API Key for server-side AI vehicle & blade diagnostics. |
-| `APP_URL` | Optional | Hosted application URL for OAuth callbacks and dispatch links. |
+| `GEMINI_API_KEY` | No | Clave de Google AI Studio. Sin ella, el diagnóstico se escribe manualmente. |
+| `STRIPE_SECRET_KEY` | No | Clave secreta de Stripe (`sk_live_...`). Sin ella, solo cobros en efectivo/Zelle. |
+| `GEMINI_MODEL` | No | Modelo a usar (por defecto `gemini-2.5-flash`). |
+| `APP_URL` | No | URL pública para los retornos de Stripe; se deduce automáticamente si se omite. |
 
-### 3. Run Development Server
-```bash
-npm run dev
+## API serverless (`api/`)
+
+| Endpoint | Método | Función |
+| :--- | :--- | :--- |
+| `/api/gemini` | POST | Proxy a Gemini (texto + imagen opcional). Rate limit por IP. |
+| `/api/stripe/config` | GET | Indica si los pagos con tarjeta están activos. |
+| `/api/stripe/create-session` | POST | Crea una Checkout Session (monto en centavos). |
+| `/api/stripe/verify` | POST | Verifica server-side el estado de una sesión (`paid`). |
+
+## Despliegue (Vercel)
+
+1. Importe el repo en Vercel (o use `vercel` CLI). Framework: Vite, detectado automáticamente por `vercel.json`.
+2. Configure las variables de entorno opcionales de la tabla anterior.
+3. `vercel --prod`.
+
+## Seguridad
+
+- Las claves API viven solo en el servidor (`api/`); el cliente nunca las ve.
+- `.gitignore` bloquea `.env*`; validación de entrada y límites de tamaño en todos los endpoints; rate limit básico por IP; cabeceras de seguridad en `vercel.json`.
+- La verificación de pago de Stripe se hace **del lado del servidor**.
+
+## Estructura del código
+
 ```
-The development server will bind to `http://localhost:3000`.
-
-### 4. Build for Production
-```bash
-npm run build
+src/
+  App.tsx              # UI principal (React 19, Tailwind 4)
+  data/presets.ts      # Fichas técnicas de 8 vehículos
+  lib/
+    types.ts           # Entidades (Client, InventoryItem, DiagnosticRecord...)
+    domain.ts          # Validaciones, ventas/reposición, CSV, analíticas, IDs
+    storage.ts         # localStorage con validación y reporte de fallos
+    gemini.ts          # Cliente del proxy /api/gemini + prompt de diagnóstico
+    stripe.ts          # Cliente de pagos / verificación de retorno
+    backup.ts          # Respaldo/restauración JSON (envelope versionado)
+    image.ts           # Compresión de fotos antes de persistir
+    *.test.ts          # 40 tests Vitest de la lógica real
+api/                   # Funciones serverless (Gemini + Stripe)
 ```
-Generates production-ready static assets in the `/dist` directory.
 
-### 5. Type Checking & Verification
-```bash
-npm run lint
-```
+## Licencia
 
----
-
-## 🔒 Security, Validation & Secret Management Guidelines
-
-1. **Zero Secret Leakage**:
-   * `.gitignore` explicitly prevents all `.env*` files (except `.env.example`), logs, and credentials from entering version control.
-   * Client-side code never accesses private secrets or master database passwords directly.
-2. **Form & Data Validation**:
-   * Strict client-side validation rules sanitize names, phone numbers, vehicle descriptions, and positive integer stock levels.
-   * Local storage data parses safely within `try/catch` fallbacks to ensure zero application crashing if browser cache is corrupted.
-3. **Production Deployment Recommendation Checklist**:
-   * [ ] Enable HTTPS / SSL on custom domain (mandatory for Web Speech and Camera hardware APIs).
-   * [ ] Connect Firebase Authentication / OAuth with Role-Based Access Control (RBAC: Admin, Dispatcher, Field Technician).
-   * [ ] Replace local browser storage with Firestore or PostgreSQL for multi-technician real-time synchronization.
-
----
-
-## 📄 License
-MIT License. Created for automotive locksmiths, mobile mechanics, and emergency roadside dispatch teams.
+MIT. Ver `ROADMAP.md` para las próximas etapas (Supabase, webhooks de Stripe, PWA offline...).
