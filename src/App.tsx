@@ -52,7 +52,10 @@ import {
   Check,
   PackageCheck,
   AlertCircle,
-  ShoppingBag
+  ShoppingBag,
+  DollarSign,
+  Save,
+  Upload
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -66,6 +69,41 @@ import {
 } from 'recharts';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
+import type { CarPreset, Client, DiagnosticRecord, InventoryItem, PaymentMethod } from './lib/types';
+import { PRESET_CAR_MODELS } from './data/presets';
+import {
+  generateId,
+  validateClientInput,
+  validateInventoryItem,
+  processItemSale,
+  processSupplierRestock,
+  appendQuickNote,
+  matchPresetByBrand,
+  buildHistoryCsv,
+  deriveAnalytics,
+  type AnalyticsSummary,
+} from './lib/domain';
+import {
+  STORAGE_KEYS,
+  loadJson,
+  saveJson,
+  removeKey,
+  isValidClientList,
+  isValidInventoryList,
+  isValidHistoryList,
+  isValidRevenue,
+} from './lib/storage';
+import { callGemini, buildDiagnosticPrompt, GeminiError } from './lib/gemini';
+import {
+  isCardPaymentEnabled,
+  createCheckoutSession,
+  verifySession,
+  parsePaymentReturn,
+  StripeClientError,
+} from './lib/stripe';
+import { serializeBackup, parseBackup, downloadTextFile, BackupError } from './lib/backup';
+import { compressImage } from './lib/image';
+
 declare global {
   interface Window {
     SpeechRecognition: any;
@@ -73,188 +111,7 @@ declare global {
   }
 }
 
-interface CarPreset {
-  model: string;
-  chip: string;
-  keyType: string;
-  freq: string;
-  programMethod: string;
-  defaultIssue: string;
-  lishiTool: string;
-  lockoutMethod: string;
-  obdLocation: string;
-  emergencyTip: string;
-}
-
-const PRESET_CAR_MODELS: CarPreset[] = [
-  {
-    model: '2005 TOYOTA COROLLA',
-    chip: 'ID4C / ID4D (Texas Crypto)',
-    keyType: 'Espada TOY43',
-    freq: '315 MHz',
-    programMethod: 'Manual (5 ciclos acelerador / 6 puerta) o Vía OBD2 con KM100 / IM608.',
-    defaultIssue: 'LLAVE PERDIDA TOTAL - REQUIERE CHIP TRANSPONDER ID4C Y CORTE TOY43 EN SITIO.',
-    lishiTool: 'Lishi TOY43 (2-in-1 / 8-Cut)',
-    lockoutMethod: 'Ganzuado Lishi TOY43 en cerradura conductor (2 mins) o varilla flexible de alcance largo.',
-    obdLocation: 'Bajo el tablero del conductor, lado izquierdo cerca del pedal de freno.',
-    emergencyTip: 'Si no responde OBD2, usar método manual: insertar llave maestra 5 veces y abrir/cerrar puerta 6 veces.'
-  },
-  {
-    model: '2010 HONDA CIVIC',
-    chip: 'ID46 (Philips Crypto 2)',
-    keyType: 'Espada HO01 / Control 3B',
-    freq: '313.8 MHz',
-    programMethod: 'PIN de 4 dígitos vía OBD2 con Autel IM608 / VVDI Key Tool Max.',
-    defaultIssue: 'CONTROL DESCONFIGURADO - PROGRAMACIÓN DE FOB Y LECTURA DE PIN EN CARRETERA.',
-    lishiTool: 'Lishi HON66 (2-in-1 High Security)',
-    lockoutMethod: 'Decodificar cerradura de puerta con Lishi HON66. Cuidado con el embrague de protección Honda.',
-    obdLocation: 'Centro inferior bajo la columna de dirección.',
-    emergencyTip: 'Si la alarma de fábrica se activa al abrir la puerta, dejar la ignición en ON durante 2 minutos para silenciar.'
-  },
-  {
-    model: '2012 NISSAN SENTRA',
-    chip: 'ID46 (PCF7936)',
-    keyType: 'Espada NSN14 / Smart Key',
-    freq: '315 MHz',
-    programMethod: 'Conversión BCM a PIN y reinicio de NATS 5/6 vía OBD2.',
-    defaultIssue: 'LUZ NATS PARPADEA EN CARRETERA - RE-PROGRAMACIÓN DE BCM Y TRANSPONDER EN SITIO.',
-    lishiTool: 'Lishi NSN14 (2-in-1)',
-    lockoutMethod: 'Ganzúa Lishi NSN14 en puerta de conductor o cuña neumática superior.',
-    obdLocation: 'Detrás de la tapa del compartimento guardaobjetos a la izquierda del volante.',
-    emergencyTip: 'Convertir código BCM de 5 dígitos a PIN de 4 dígitos. Si NATS se bloquea, dejar ignición ON por 15 min.'
-  },
-  {
-    model: '2008 FORD F-150',
-    chip: 'ID63 (40-bit / H84)',
-    keyType: 'Espada FO15 / Keyfob 3B',
-    freq: '315 MHz',
-    programMethod: 'Bypass PATS 3 (espera de 10 min o lectura directa EEPROM).',
-    defaultIssue: 'AUXILIO DE COPIA / PÉRDIDA TOTAL - PROGRAMACIÓN PATS Y CORTADOR DE ESPADA FO15.',
-    lishiTool: 'Lishi FO38 (2-in-1)',
-    lockoutMethod: 'Ganzuado Lishi FO38 directo o cuña de aire con gancho en manija interna.',
-    obdLocation: 'Debajo del tablero del lado del conductor, accesible directamente sin desarmar.',
-    emergencyTip: 'Se requieren 2 llaves programadas para completar el ciclo PATS si fue pérdida total.'
-  },
-  {
-    model: '2015 CHEVROLET CAMARO',
-    chip: 'ID46 (Circle Plus / Passkey III+)',
-    keyType: 'Navaja HU100 (4 Botones)',
-    freq: '315 MHz',
-    programMethod: 'Aprendizaje de 30 min (3 ciclos 10 min) o bypass directo OBD2.',
-    defaultIssue: 'LLAVE NAVAJA DAÑADA / PERDIDA EN VÍA PÚBLICA - CHIP CIRCLE PLUS Y CORTE HU100.',
-    lishiTool: 'Lishi HU100 (2-in-1 / 8-Cut)',
-    lockoutMethod: 'Decodificar alturas de combinación con Lishi HU100 en puerta del conductor.',
-    obdLocation: 'Esquina inferior izquierda del tablero del conductor.',
-    emergencyTip: 'Sin scanner disponible en campo, el procedimiento manual de 3x10 minutos re-aprende la llave automáticamente.'
-  },
-  {
-    model: '2018 HYUNDAI ELANTRA',
-    chip: 'ID47 (Hitag3)',
-    keyType: 'Smart Key Proximity HYN14R',
-    freq: '433 MHz',
-    programMethod: 'Extracción de PIN Code de 6 dígitos vía OBD2 leyendo VIN.',
-    defaultIssue: 'SMART KEY PERDIDA EN ESTACIONAMIENTO - PROGRAMACIÓN PROXIMIDAD HYUNDAI ID47.',
-    lishiTool: 'Lishi HY15 / HY22',
-    lockoutMethod: 'Retirar tapón plástico de la manija del conductor y usar Ganzúa Lishi HY15.',
-    obdLocation: 'Detrás del panel de fusibles interior al lado izquierdo bajo el volante.',
-    emergencyTip: 'Para vehículos Proximity con batería de auto descargada, presionar el botón START con la esquina de la llave inteligente.'
-  },
-  {
-    model: '2016 JEEP GRAND CHEROKEE',
-    chip: 'Hitag AES / ID46',
-    keyType: 'FOBIK / Proximity 5B',
-    freq: '433 MHz',
-    programMethod: 'Lectura de PIN en módulo RFHUB mediante cable CAN-BUS 12+8 / OBD2.',
-    defaultIssue: 'CONTROL PROXIMIDAD DESCONFIGURADO - LECTURA PIN CODE Y BYPASS SGW EN SITIO.',
-    lishiTool: 'Lishi CY24 (2-in-1)',
-    lockoutMethod: 'Ganzuado cilindro con Lishi CY24 o bolsa de aire en marco superior.',
-    obdLocation: 'Lado del conductor bajo la columna de dirección.',
-    emergencyTip: 'Modelos con Bypass SGW Chrysler necesitan conectar el cable 12+8 directamente detrás del módulo RFHUB.'
-  },
-  {
-    model: '2014 VOLKSWAGEN JETTA',
-    chip: 'ID48 (Megamos Crypto / CAN)',
-    keyType: 'Navaja HU66 (3 Botones)',
-    freq: '315 MHz',
-    programMethod: 'Lectura Component Security (CS) e Inmo 4th Gen vía OBD2.',
-    defaultIssue: 'COPIA DE LLAVE NAVAJA IMMO4 - PRE-CABEZAL PREPARADO CS Y CORTE HU66 EN CAMIÓN.',
-    lishiTool: 'Lishi HU66 (2-in-1 Gen 3)',
-    lockoutMethod: 'Ganzuado Lishi HU66 en puerta de conductor (girar con tensión suave).',
-    obdLocation: 'Ubicado bajo el tablero, recubierto de plástico púrpura/negro visible.',
-    emergencyTip: 'Pre-preparar chip Super Transponder / ID48 con los 7 bytes de CS antes de iniciar aprendizaje OBD2.'
-  }
-];
-
-interface Client {
-  id: string;
-  firstName: string;
-  lastName: string;
-  phone: string;
-  email: string;
-  carInfo: string;
-  issue: string;
-  timestamp: string;
-  location?: string;
-  notes?: string;
-}
-
-interface InventoryItem {
-  id: string;
-  name: string;
-  type: string;
-  stock: number;
-  price: number;
-  barcode: string;
-}
-
-interface DiagnosticRecord {
-  id: string;
-  date: string;
-  client: string;
-  car: string;
-  issue: string;
-  aiDiagnosis: string;
-  status: string;
-  image?: string | null;
-  notes?: string;
-}
-
-const INITIAL_INVENTORY: InventoryItem[] = [
-  { id: '1', name: 'Toyota Corolla 98-05', type: 'LLAVE TRANSPONDER', stock: 12, price: 65, barcode: '123' },
-  { id: '2', name: 'Honda Civic 01-10', type: 'CONTROL FOB (3B)', stock: 2, price: 85, barcode: '456' },
-  { id: '3', name: 'Nissan Sentra 00-12', type: 'CHIP ID46', stock: 8, price: 45, barcode: '789' },
-  { id: '4', name: 'Ford F-150 04-08', type: 'LLAVE CHIP H84', stock: 5, price: 70, barcode: '101' },
-];
-
-const INITIAL_HISTORY: DiagnosticRecord[] = [
-  { 
-    id: '1', 
-    date: '26/10/2023 14:30', 
-    client: 'CARLOS RUIZ', 
-    car: '2005 TOYOTA COROLLA', 
-    issue: 'LLAVE PERDIDA TOTAL', 
-    aiDiagnosis: 'CHIP TRANSPONDER ID4C REQUERIDO. PROGRAMACIÓN MANUAL: INSERTAR LLAVE MAESTRA 5 VECES, ABRIR/CERRAR PUERTA 6 VECES.', 
-    status: 'ÉXITO' 
-  },
-  { 
-    id: '2', 
-    date: '27/10/2023 10:15', 
-    client: 'ANA GOMEZ', 
-    car: '2010 HONDA CIVIC', 
-    issue: 'CONTROL FOB DESCONFIGURADO', 
-    aiDiagnosis: 'RE-SINCRONIZACIÓN DE CONTROL (3 BOTONES, 315MHZ): CICLAR IGNICIÓN A ON 4 VECES PRESIONANDO EL BOTÓN BLOQUEAR.', 
-    status: 'ÉXITO' 
-  },
-  { 
-    id: '3', 
-    date: '27/10/2023 16:45', 
-    client: 'LUIS MARTINEZ', 
-    car: '2012 NISSAN SENTRA', 
-    issue: 'NO ARRANCA, LUZ NATS PARPADEA', 
-    aiDiagnosis: 'ANTENA DE INMOVILIZADOR O CHIP ID46 DAÑADO. REQUIERE CONEXIÓN OBD2 PARA LEER CÓDIGO BCM Y OBTENER PIN DE 4 DÍGITOS.', 
-    status: 'REQUIERE ESCÁNER' 
-  }
-];
+// (Las fichas técnicas de vehículos viven en src/data/presets.ts)
 
 // Barcode Scanner Modal
 function BarcodeScannerModal({ onScan, onClose }: { onScan: (text: string) => void, onClose: () => void }) {
@@ -408,17 +265,24 @@ function AddInventoryModal({ onAdd, onClose }: { onAdd: (item: Omit<InventoryIte
   const [stock, setStock] = useState(10);
   const [price, setPrice] = useState(50);
   const [barcode, setBarcode] = useState('');
+  const [errors, setErrors] = useState<string[]>([]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!name) return;
-    onAdd({
+    const item = {
       name,
       type,
       stock: Number(stock),
       price: Number(price),
       barcode: barcode || Math.floor(100 + Math.random() * 900).toString()
-    });
+    };
+    const validation = validateInventoryItem(item);
+    if (!validation.isValid) {
+      setErrors(validation.errors);
+      return;
+    }
+    setErrors([]);
+    onAdd(item);
     onClose();
   };
 
@@ -433,6 +297,14 @@ function AddInventoryModal({ onAdd, onClose }: { onAdd: (item: Omit<InventoryIte
         </button>
         <h3 className="text-xl font-black uppercase text-[#FFFF00] mb-6 text-center tracking-widest">Agregar Nuevo Item</h3>
         
+        {errors.length > 0 && (
+          <div className="mb-4 bg-red-950/60 border-2 border-red-600 p-3 space-y-1">
+            {errors.map(err => (
+              <p key={err} className="text-xs font-black uppercase text-red-300">{err}</p>
+            ))}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-black text-[#FFFF00] uppercase mb-1">Modelo de Vehículo / Llave</label>
@@ -532,6 +404,8 @@ function getStatusBadge(status: string) {
 }
 
 function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClose: () => void }) {
+  const total = record.amount ?? 0;
+
   const handlePrint = () => {
     window.print();
   };
@@ -547,7 +421,7 @@ function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClo
     if (record.notes) {
       text += `*Notas de Campo:* ${record.notes}\n`;
     }
-    text += `*Total Cobrado:* $150.00 USD\n\n` +
+    text += `*Total Cobrado:* $${total.toFixed(2)} USD${record.paymentMethod ? ` (${record.paymentMethod.toUpperCase()})` : ''}\n\n` +
       `_¡Gracias por confiar en nuestros cerrajeros móviles! Garantía de 30 días en chips y mandos._`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
@@ -598,7 +472,7 @@ function PrintTicketModal({ record, onClose }: { record: DiagnosticRecord; onClo
           )}
           <div className="flex justify-between items-center text-sm font-black pt-2 border-t-2 border-black">
             <span>TOTAL COBRADO:</span>
-            <span className="text-lg">$150.00 USD</span>
+            <span className="text-lg">${total.toFixed(2)} USD</span>
           </div>
           <div className="text-center pt-2">
             <span className={`inline-block px-3 py-1 text-[10px] font-black uppercase tracking-widest ${
@@ -821,25 +695,9 @@ function FieldGuideModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-const WEEKLY_SERVICE_TRENDS = [
-  { dia: 'LUN', duplicados: 5, aperturas: 3, programaciones: 4, ingresos: 1800 },
-  { dia: 'MAR', duplicados: 7, aperturas: 2, programaciones: 6, ingresos: 2250 },
-  { dia: 'MIÉ', duplicados: 4, aperturas: 5, programaciones: 3, ingresos: 1800 },
-  { dia: 'JUE', duplicados: 8, aperturas: 4, programaciones: 7, ingresos: 2850 },
-  { dia: 'VIE', duplicados: 10, aperturas: 6, programaciones: 8, ingresos: 3600 },
-  { dia: 'SÁB', duplicados: 12, aperturas: 8, programaciones: 10, ingresos: 4500 },
-  { dia: 'DOM', duplicados: 6, aperturas: 9, programaciones: 5, ingresos: 3000 },
-];
-
-const CATEGORY_BREAKDOWN = [
-  { categoria: 'Duplicado Espada', cantidad: 42, monto: 6300 },
-  { categoria: 'Smart Key Proximidad', cantidad: 28, monto: 7000 },
-  { categoria: 'Apertura Lishi (Lockout)', cantidad: 35, monto: 3500 },
-  { categoria: 'Programación BCM / NATS', cantidad: 19, monto: 2850 },
-];
-
-function DashboardAnalyticsChart() {
+function DashboardAnalyticsChart({ analytics }: { analytics: AnalyticsSummary }) {
   const [chartType, setChartType] = useState<'trends' | 'categories'>('trends');
+  const hasData = analytics.totalServices > 0;
 
   return (
     <div className="mt-8 bg-zinc-950 border-4 border-zinc-800 p-6 relative">
@@ -852,7 +710,7 @@ function DashboardAnalyticsChart() {
             </h3>
           </div>
           <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mt-1">
-            Volumen de Servicios e Ingresos Semanales del Taller Móvil
+            Calculado con su historial real de servicios
           </p>
         </div>
 
@@ -865,7 +723,7 @@ function DashboardAnalyticsChart() {
               chartType === 'trends' ? 'bg-[#FFFF00] text-black border-[#FFFF00]' : 'bg-black text-zinc-400 border-zinc-800 hover:text-white'
             }`}
           >
-            <BarChart3 className="w-4 h-4" /> Tendencia Semanal
+            <BarChart3 className="w-4 h-4" /> Últimos 7 Días
           </button>
           <button 
             type="button"
@@ -879,70 +737,79 @@ function DashboardAnalyticsChart() {
         </div>
       </div>
 
-      {/* KPI Stats Bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <div className="bg-black p-3.5 border-2 border-zinc-800">
-          <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Trabajos Esta Semana</span>
-          <p className="text-xl font-black text-white uppercase mt-0.5">124 SERVICIOS</p>
-          <span className="text-[10px] text-emerald-400 font-bold uppercase mt-1 block">↑ 18% vs semana pasada</span>
+      {!hasData ? (
+        <div className="py-12 text-center">
+          <Activity className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+          <p className="text-sm font-black uppercase text-zinc-400">Sin datos todavía</p>
+          <p className="text-xs text-zinc-600 mt-1 uppercase font-bold">
+            Los gráficos se llenarán automáticamente al registrar servicios cobrados.
+          </p>
         </div>
-        <div className="bg-black p-3.5 border-2 border-zinc-800">
-          <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Ingreso Semanal Est.</span>
-          <p className="text-xl font-black text-[#FFFF00] uppercase mt-0.5">$19,800.00 USD</p>
-          <span className="text-[10px] text-emerald-400 font-bold uppercase mt-1 block">Prom. $150.00 / Servicio</span>
-        </div>
-        <div className="bg-black p-3.5 border-2 border-zinc-800">
-          <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Servicio Más Solicitado</span>
-          <p className="text-sm font-black text-white uppercase mt-0.5 truncate">Smart Key & Proximidad</p>
-          <span className="text-[10px] text-zinc-400 font-bold uppercase mt-1 block">35% del volumen total</span>
-        </div>
-        <div className="bg-black p-3.5 border-2 border-zinc-800">
-          <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Tiempo Promedio Sitio</span>
-          <p className="text-xl font-black text-white uppercase mt-0.5">22 MINUTOS</p>
-          <span className="text-[10px] text-amber-400 font-bold uppercase mt-1 block">Ganzuado + Programación</span>
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* KPI Stats Bar */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+            <div className="bg-black p-3.5 border-2 border-zinc-800">
+              <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Servicios Totales</span>
+              <p className="text-xl font-black text-white uppercase mt-0.5">{analytics.totalServices} SERVICIOS</p>
+              <span className="text-[10px] text-zinc-500 font-bold uppercase mt-1 block">Historial completo</span>
+            </div>
+            <div className="bg-black p-3.5 border-2 border-zinc-800">
+              <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Ingresos Totales</span>
+              <p className="text-xl font-black text-[#FFFF00] uppercase mt-0.5">${analytics.totalRevenue.toFixed(2)}</p>
+              <span className="text-[10px] text-zinc-500 font-bold uppercase mt-1 block">Ventas + servicios</span>
+            </div>
+            <div className="bg-black p-3.5 border-2 border-zinc-800">
+              <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Ticket Promedio</span>
+              <p className="text-xl font-black text-white uppercase mt-0.5">${analytics.avgTicket.toFixed(2)}</p>
+              <span className="text-[10px] text-zinc-500 font-bold uppercase mt-1 block">Por servicio</span>
+            </div>
+            <div className="bg-black p-3.5 border-2 border-zinc-800">
+              <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block">Servicio Más Frecuente</span>
+              <p className="text-sm font-black text-white uppercase mt-0.5 truncate">{analytics.topCategory}</p>
+              <span className="text-[10px] text-zinc-500 font-bold uppercase mt-1 block">Clasificado automáticamente</span>
+            </div>
+          </div>
 
-      {/* Chart Canvas */}
-      <div className="h-[280px] w-full bg-black p-2 border-2 border-zinc-800 pt-4">
-        <ResponsiveContainer width="100%" height="100%">
-          {chartType === 'trends' ? (
-            <BarChart data={WEEKLY_SERVICE_TRENDS} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-              <XAxis dataKey="dia" stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 'bold' }} />
-              <YAxis stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 'bold' }} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#09090b', borderColor: '#FFFF00', borderWidth: '2px', color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
-                formatter={(value: any, name: any) => {
-                  const labels: Record<string, string> = {
-                    duplicados: 'Duplicados de Llave',
-                    aperturas: 'Aperturas sin Llave',
-                    programaciones: 'Programación Transponder',
-                    ingresos: 'Ingresos Total ($)'
-                  };
-                  return [name === 'ingresos' ? `$${value} USD` : `${value} Trabajos`, labels[name] || name];
-                }}
-              />
-              <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', color: '#fff' }} />
-              <Bar dataKey="duplicados" name="Duplicados" fill="#FFFF00" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="aperturas" name="Aperturas" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="programaciones" name="Programación" fill="#10b981" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          ) : (
-            <BarChart data={CATEGORY_BREAKDOWN} layout="vertical" margin={{ top: 10, right: 30, left: 40, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-              <XAxis type="number" stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 'bold' }} />
-              <YAxis dataKey="categoria" type="category" stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 10, fontWeight: 'bold' }} width={120} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#09090b', borderColor: '#FFFF00', borderWidth: '2px', color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
-                formatter={(value: any, name: any) => [name === 'monto' ? `$${value} USD` : `${value} Unidades`, name === 'monto' ? 'Ingreso Generado' : 'Cantidad Realizada']}
-              />
-              <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', color: '#fff' }} />
-              <Bar dataKey="cantidad" name="Cantidad Realizada" fill="#FFFF00" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          )}
-        </ResponsiveContainer>
-      </div>
+          {/* Chart Canvas */}
+          <div className="h-[280px] w-full bg-black p-2 border-2 border-zinc-800 pt-4">
+            <ResponsiveContainer width="100%" height="100%">
+              {chartType === 'trends' ? (
+                <BarChart data={analytics.weekly} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis dataKey="dia" stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 'bold' }} />
+                  <YAxis stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 'bold' }} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#09090b', borderColor: '#FFFF00', borderWidth: '2px', color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
+                    formatter={(value: any, name: any) => {
+                      const labels: Record<string, string> = {
+                        servicios: 'Servicios',
+                        ingresos: 'Ingresos ($)'
+                      };
+                      return [name === 'ingresos' ? `$${value} USD` : `${value} Servicios`, labels[name] || name];
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', color: '#fff' }} />
+                  <Bar dataKey="servicios" name="Servicios" fill="#FFFF00" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="ingresos" name="Ingresos" fill="#10b981" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              ) : (
+                <BarChart data={analytics.categories} layout="vertical" margin={{ top: 10, right: 30, left: 40, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis type="number" stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 'bold' }} />
+                  <YAxis dataKey="categoria" type="category" stroke="#a1a1aa" tick={{ fill: '#a1a1aa', fontSize: 10, fontWeight: 'bold' }} width={150} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#09090b', borderColor: '#FFFF00', borderWidth: '2px', color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
+                    formatter={(value: any, name: any) => [name === 'monto' ? `$${value} USD` : `${value} Servicios`, name === 'monto' ? 'Ingreso Generado' : 'Servicios']}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', color: '#fff' }} />
+                  <Bar dataKey="cantidad" name="Servicios" fill="#FFFF00" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1088,10 +955,15 @@ function MiniLocationMap({
 
     fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`, {
       headers: {
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        // Política de uso de Nominatim: identificarse con un nombre de app
+        'User-Agent': 'MiamiAutoKeyERP/1.0 (field service webapp)'
       }
     })
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`Nominatim ${res.status}`);
+        return res.json();
+      })
       .then(data => {
         if (data && data.length > 0) {
           const lat = parseFloat(data[0].lat);
@@ -1651,54 +1523,171 @@ function SupplierOrderModal({
   );
 }
 
+// Modal de cobro: efectivo/Zelle se registran directo; tarjeta inicia
+// un Stripe Checkout (redirección) verificado al volver al servidor.
+function PaymentModal({
+  cardEnabled,
+  clientLabel,
+  busy,
+  error,
+  onClose,
+  onManualPayment,
+  onCardPayment
+}: {
+  cardEnabled: boolean;
+  clientLabel: string;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onManualPayment: (amount: number, method: 'efectivo' | 'zelle') => void;
+  onCardPayment: (amount: number) => void;
+}) {
+  const [amount, setAmount] = useState(150);
+  const [method, setMethod] = useState<'efectivo' | 'zelle' | 'tarjeta'>('efectivo');
+
+  const amountValid = isFinite(amount) && amount >= 1;
+  const cardBlocked = method === 'tarjeta' && !cardEnabled;
+
+  const handleConfirm = () => {
+    if (!amountValid || busy) return;
+    if (method === 'tarjeta') {
+      if (!cardEnabled) return;
+      onCardPayment(amount);
+    } else {
+      onManualPayment(amount, method);
+    }
+  };
+
+  const methods: { id: 'efectivo' | 'zelle' | 'tarjeta'; label: string; hint: string; disabled: boolean }[] = [
+    { id: 'efectivo', label: 'Efectivo', hint: 'Registro directo', disabled: false },
+    { id: 'zelle', label: 'Zelle / Transferencia', hint: 'Registro directo', disabled: false },
+    {
+      id: 'tarjeta',
+      label: 'Tarjeta (Stripe)',
+      hint: cardEnabled ? 'Checkout seguro' : 'No configurado en servidor',
+      disabled: !cardEnabled
+    },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/90 p-4 backdrop-blur-md overflow-y-auto">
+      <div className="w-full max-w-md bg-zinc-950 border-4 border-[#FFFF00] p-6 relative shadow-[8px_8px_0px_#FFFF00] my-6">
+        <button
+          onClick={onClose}
+          className="absolute -top-6 -right-6 bg-red-500 text-white w-12 h-12 font-black border-4 border-black flex items-center justify-center hover:bg-red-400 transition-colors z-10"
+        >
+          <X className="w-6 h-6" />
+        </button>
+
+        <h3 className="text-xl font-black uppercase text-[#FFFF00] mb-1 text-center tracking-widest">Cobrar Servicio</h3>
+        <p className="text-xs text-zinc-400 font-bold uppercase tracking-widest text-center mb-6 truncate">{clientLabel}</p>
+
+        <div className="space-y-5">
+          <div>
+            <label className="block text-xs font-black text-[#FFFF00] uppercase mb-2 tracking-widest">Monto (USD)</label>
+            <div className="flex items-center gap-2">
+              <span className="text-2xl font-black text-[#FFFF00]">$</span>
+              <input
+                type="number"
+                min="1"
+                step="0.01"
+                value={amount}
+                onChange={e => setAmount(Number(e.target.value))}
+                className="w-full bg-black border-4 border-zinc-800 p-3 text-2xl font-black text-white focus:border-[#FFFF00] focus:outline-none"
+              />
+            </div>
+            <div className="flex gap-2 mt-2">
+              {[65, 100, 150, 250].map(preset => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setAmount(preset)}
+                  className="flex-1 bg-zinc-900 text-zinc-300 hover:text-black hover:bg-[#FFFF00] border border-zinc-700 py-1.5 text-xs font-black uppercase transition-colors"
+                >
+                  ${preset}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-black text-[#FFFF00] uppercase mb-2 tracking-widest">Método de Pago</label>
+            <div className="space-y-2">
+              {methods.map(m => (
+                <button
+                  key={m.id}
+                  type="button"
+                  disabled={m.disabled}
+                  onClick={() => setMethod(m.id)}
+                  className={`w-full flex items-center justify-between px-4 py-3 border-2 transition-colors text-left ${
+                    method === m.id
+                      ? 'bg-[#FFFF00] text-black border-[#FFFF00]'
+                      : m.disabled
+                        ? 'bg-zinc-900 text-zinc-600 border-zinc-800 cursor-not-allowed'
+                        : 'bg-black text-white border-zinc-700 hover:border-white'
+                  }`}
+                >
+                  <span className="font-black uppercase text-sm flex items-center gap-2">
+                    {m.id === 'tarjeta' ? <CreditCard className="w-4 h-4" /> : <DollarSign className="w-4 h-4" />}
+                    {m.label}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider">{m.hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {method === 'tarjeta' && cardEnabled && (
+            <p className="text-[10px] text-zinc-400 font-bold uppercase leading-relaxed bg-black border border-zinc-800 p-2.5">
+              Al confirmar se abrirá la página segura de Stripe para que el cliente pague con tarjeta. El pago queda verificado automáticamente al regresar.
+            </p>
+          )}
+
+          {error && (
+            <div className="bg-red-950/50 border-2 border-red-600 p-3 text-xs font-bold text-red-300 uppercase">
+              {error}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={!amountValid || busy || cardBlocked}
+            className="w-full bg-green-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-black py-4 font-black uppercase text-lg tracking-tighter shadow-[4px_4px_0px_#fff] transition-colors hover:bg-green-400 flex items-center justify-center gap-2"
+          >
+            {busy ? <RefreshCw className="w-5 h-5 animate-spin" /> : <CreditCard className="w-5 h-5" />}
+            {busy ? 'Redirigiendo a Stripe...' : `Confirmar Cobro ${amountValid ? `$${amount.toFixed(2)}` : ''}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<'intake' | 'dashboard' | 'history'>('intake');
   
-  // LocalStorage-backed state with resilient fallbacks
-  const [clients, setClients] = useState<Client[]>(() => {
-    try {
-      const saved = localStorage.getItem('miami_autokey_clients');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // LocalStorage-backed state with resilient fallbacks (sin datos demo:
+  // una instalación nueva empieza vacía, lista para datos reales).
+  const [clients, setClients] = useState<Client[]>(() =>
+    loadJson<Client[]>(STORAGE_KEYS.clients, [], isValidClientList)
+  );
 
-  const [inventory, setInventory] = useState<InventoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('miami_autokey_inventory');
-      return saved ? JSON.parse(saved) : INITIAL_INVENTORY;
-    } catch {
-      return INITIAL_INVENTORY;
-    }
-  });
+  const [inventory, setInventory] = useState<InventoryItem[]>(() =>
+    loadJson<InventoryItem[]>(STORAGE_KEYS.inventory, [], isValidInventoryList)
+  );
 
-  const [history, setHistory] = useState<DiagnosticRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem('miami_autokey_history');
-      return saved ? JSON.parse(saved) : INITIAL_HISTORY;
-    } catch {
-      return INITIAL_HISTORY;
-    }
-  });
+  const [history, setHistory] = useState<DiagnosticRecord[]>(() =>
+    loadJson<DiagnosticRecord[]>(STORAGE_KEYS.history, [], isValidHistoryList)
+  );
 
-  const [activeClient, setActiveClient] = useState<Client | null>(() => {
-    try {
-      const saved = localStorage.getItem('miami_autokey_active_client');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [activeClient, setActiveClient] = useState<Client | null>(() =>
+    loadJson<Client | null>(STORAGE_KEYS.activeClient, null, v => v === null || (typeof v === 'object' && v !== null))
+  );
 
-  const [revenue, setRevenue] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('miami_autokey_revenue');
-      return saved ? JSON.parse(saved) : 1450.50;
-    } catch {
-      return 1450.50;
-    }
-  });
+  const [revenue, setRevenue] = useState<number>(() =>
+    loadJson<number>(STORAGE_KEYS.revenue, 0, isValidRevenue)
+  );
   
   const [searchQuery, setSearchQuery] = useState('');
   const [historySearchQuery, setHistorySearchQuery] = useState('');
@@ -1714,48 +1703,42 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(true);
 
+  // Estado de la IA: diagnóstico editable con generación asistida
+  const [diagnosisText, setDiagnosisText] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  // Estado de pagos
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [cardPaymentsEnabled, setCardPaymentsEnabled] = useState<boolean | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
+  // Aviso cuando localStorage rechaza escrituras (cuota excedida, modo privado)
+  const [storageWriteFailed, setStorageWriteFailed] = useState(false);
+
   // Sync state changes to localStorage for roadside offline persistence
   useEffect(() => {
-    try {
-      localStorage.setItem('miami_autokey_clients', JSON.stringify(clients));
-    } catch (e) {
-      console.error('Storage sync error (clients):', e);
-    }
+    if (!saveJson(STORAGE_KEYS.clients, clients)) setStorageWriteFailed(true);
   }, [clients]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('miami_autokey_inventory', JSON.stringify(inventory));
-    } catch (e) {
-      console.error('Storage sync error (inventory):', e);
-    }
+    if (!saveJson(STORAGE_KEYS.inventory, inventory)) setStorageWriteFailed(true);
   }, [inventory]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('miami_autokey_history', JSON.stringify(history));
-    } catch (e) {
-      console.error('Storage sync error (history):', e);
-    }
+    if (!saveJson(STORAGE_KEYS.history, history)) setStorageWriteFailed(true);
   }, [history]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('miami_autokey_revenue', JSON.stringify(revenue));
-    } catch (e) {
-      console.error('Storage sync error (revenue):', e);
-    }
+    if (!saveJson(STORAGE_KEYS.revenue, revenue)) setStorageWriteFailed(true);
   }, [revenue]);
 
   useEffect(() => {
-    try {
-      if (activeClient) {
-        localStorage.setItem('miami_autokey_active_client', JSON.stringify(activeClient));
-      } else {
-        localStorage.removeItem('miami_autokey_active_client');
-      }
-    } catch (e) {
-      console.error('Storage sync error (activeClient):', e);
+    if (activeClient) {
+      if (!saveJson(STORAGE_KEYS.activeClient, activeClient)) setStorageWriteFailed(true);
+    } else {
+      removeKey(STORAGE_KEYS.activeClient);
     }
   }, [activeClient]);
 
@@ -1789,15 +1772,10 @@ export default function App() {
   const lowStockItems = useMemo(() => inventory.filter(item => item.stock < 3), [inventory]);
 
   const handleConfirmRestock = (restockMap: Record<string, number>) => {
-    setInventory(prev => prev.map(item => {
-      if (item.id in restockMap) {
-        return {
-          ...item,
-          stock: item.stock + restockMap[item.id]
-        };
-      }
-      return item;
-    }));
+    setInventory(prev => processSupplierRestock(
+      prev,
+      Object.entries(restockMap).map(([itemId, quantity]) => ({ itemId, quantity }))
+    ));
     setShowSupplierOrderModal(false);
     setVoiceToastMessage(`✅ REPOSICIÓN COMPLETADA: Se ha incrementado el stock de los ítems ordenados.`);
   };
@@ -1865,48 +1843,23 @@ export default function App() {
       setShowSupplierOrderModal(true);
       setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Abrir "Generar Pedido Proveedor"`);
       handledCommand = true;
-    } else if (text.includes('cobrar') || text.includes('procesar pago') || text.includes('stripe')) {
-      handleStripePayment();
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: "Cobrar Servicio $150 USD"`);
+    } else if (text.includes('cobrar') || text.includes('procesar pago') || text.includes('pago')) {
+      setPaymentModalOpen(true);
+      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Abrir "Cobrar Servicio"`);
       handledCommand = true;
     } else if (text.includes('escanear') || text.includes('escáner') || text.includes('código qr') || text.includes('escanear qr')) {
       setScannerOpen(true);
       setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Abrir "Escáner QR"`);
       handledCommand = true;
     }
-    // Presets
-    else if (text.includes('toyota')) {
-      handlePresetSelect('2003 TOYOTA COROLLA');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Toyota Corolla"`);
-      handledCommand = true;
-    } else if (text.includes('honda')) {
-      handlePresetSelect('2010 HONDA CIVIC');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Honda Civic"`);
-      handledCommand = true;
-    } else if (text.includes('nissan')) {
-      handlePresetSelect('2012 NISSAN SENTRA');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Nissan Sentra"`);
-      handledCommand = true;
-    } else if (text.includes('ford')) {
-      handlePresetSelect('2008 FORD F-150');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Ford F-150"`);
-      handledCommand = true;
-    } else if (text.includes('chevy') || text.includes('chevrolet')) {
-      handlePresetSelect('2015 CHEVROLET CAMARO');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Chevrolet Camaro"`);
-      handledCommand = true;
-    } else if (text.includes('hyundai')) {
-      handlePresetSelect('2018 HYUNDAI ELANTRA');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Hyundai Elantra"`);
-      handledCommand = true;
-    } else if (text.includes('jeep')) {
-      handlePresetSelect('2016 JEEP GRAND CHEROKEE');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Jeep Grand Cherokee"`);
-      handledCommand = true;
-    } else if (text.includes('volkswagen') || text.includes('vw')) {
-      handlePresetSelect('2014 VOLKSWAGEN JETTA');
-      setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "Volkswagen Jetta"`);
-      handledCommand = true;
+    // Presets: buscar la ficha por marca (sin años hardcodeados)
+    else {
+      const brandPreset = matchPresetByBrand(text, PRESET_CAR_MODELS);
+      if (brandPreset) {
+        handlePresetSelect(brandPreset.model);
+        setVoiceToastMessage(`🎙️ COMANDO DE VOZ: Ficha Seleccionada "${brandPreset.model}"`);
+        handledCommand = true;
+      }
     }
 
     // Dictation into form if not a navigation command
@@ -2030,30 +1983,44 @@ export default function App() {
     }
   };
 
+  const [intakeErrors, setIntakeErrors] = useState<string[]>([]);
+
   const handleRegister = (e: FormEvent) => {
     e.preventDefault();
+    const validation = validateClientInput(formData);
+    if (!validation.isValid) {
+      setIntakeErrors(validation.errors);
+      return;
+    }
+    setIntakeErrors([]);
     const newClient: Client = {
-      id: Date.now().toString(),
+      id: generateId(),
       ...formData,
-      timestamp: new Date().toLocaleString()
+      timestamp: new Date().toLocaleString(),
+      timestampMs: Date.now()
     };
     setClients(prev => [...prev, newClient]);
     setActiveClient(newClient);
+    setDiagnosisText('');
+    setAiError(null);
     setView('dashboard');
   };
 
   const handleSkip = () => {
     const defaultClient: Client = {
-      id: Date.now().toString(),
+      id: generateId(),
       firstName: 'CLIENTE',
       lastName: 'GENÉRICO',
       phone: 'N/A',
       email: 'N/A',
       carInfo: formData.carInfo || 'VEHÍCULO NO ESPECIFICADO',
       issue: formData.issue || 'DIAGNÓSTICO RÁPIDO Y PROGRAMACIÓN DE LLAVE',
-      timestamp: new Date().toLocaleString()
+      timestamp: new Date().toLocaleString(),
+      timestampMs: Date.now()
     };
     setActiveClient(defaultClient);
+    setDiagnosisText('');
+    setAiError(null);
     setView('dashboard');
   };
 
@@ -2066,74 +2033,205 @@ export default function App() {
 
   const handleAppendQuickNote = (tag: string) => {
     if (!activeClient) return;
-    const currentNotes = activeClient.notes || '';
-    const updatedNotes = currentNotes ? `${currentNotes} • ${tag}` : tag;
-    handleUpdateClientNotes(updatedNotes);
+    handleUpdateClientNotes(appendQuickNote(activeClient.notes, tag));
   };
 
   const handleSell = (id: string) => {
-    setInventory(prev => prev.map(item => {
-      if (item.id === id && item.stock > 0) {
-        setRevenue(r => r + item.price);
-        return { ...item, stock: item.stock - 1 };
+    setInventory(prev => {
+      const { updatedInventory, soldItem } = processItemSale(prev, id);
+      if (soldItem) {
+        setRevenue(r => r + soldItem.price);
       }
-      return item;
-    }));
+      return updatedInventory;
+    });
   };
 
   const handleAddInventory = (newItem: Omit<InventoryItem, 'id'>) => {
     const itemWithId: InventoryItem = {
-      id: Date.now().toString(),
+      id: generateId(),
       ...newItem
     };
     setInventory(prev => [itemWithId, ...prev]);
   };
 
-  const handleStripePayment = () => {
-    const serviceCost = 150.00;
-    setRevenue(r => r + serviceCost);
+  // ─── Diagnóstico IA (Gemini vía proxy /api/gemini) ──────────────────────
 
-    const recordClient = activeClient 
-      ? `${activeClient.firstName} ${activeClient.lastName}` 
+  const handleGenerateDiagnosis = async () => {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const prompt = buildDiagnosticPrompt(activeClient, Boolean(capturedImage));
+      const imageBase64 = capturedImage?.startsWith('data:image/')
+        ? capturedImage.split(',')[1]
+        : capturedImage || undefined;
+      const response = await callGemini({
+        prompt,
+        imageBase64,
+        mimeType: 'image/jpeg',
+      });
+      setDiagnosisText(response.text);
+    } catch (err) {
+      if (err instanceof GeminiError) {
+        setAiError(err.message);
+      } else {
+        setAiError('Error inesperado al generar el diagnóstico. Intente de nuevo o escríbalo manualmente.');
+      }
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  // ─── Registro de pagos (efectivo / zelle directo, tarjeta vía Stripe) ────
+
+  const buildRecordForPayment = (amount: number, method: PaymentMethod, stripeSessionId?: string): DiagnosticRecord => {
+    const recordClient = activeClient
+      ? `${activeClient.firstName} ${activeClient.lastName}`
       : 'CLIENTE MOSTRADOR';
-    const recordCar = activeClient?.carInfo || 'VEHÍCULO NO ESPECIFICADO';
-    const recordIssue = activeClient?.issue || 'DIAGNÓSTICO Y COPIA DE LLAVE';
-
-    const newHistoryRecord: DiagnosticRecord = {
-      id: Date.now().toString(),
+    return {
+      id: generateId(),
       date: new Date().toLocaleString(),
+      timestampMs: Date.now(),
       client: recordClient,
-      car: recordCar,
-      issue: recordIssue,
+      car: activeClient?.carInfo || 'VEHÍCULO NO ESPECIFICADO',
+      issue: activeClient?.issue || 'DIAGNÓSTICO Y COPIA DE LLAVE',
       notes: activeClient?.notes,
-      aiDiagnosis: capturedImage 
-        ? 'IMAGEN CAPTURADA: CHIP TRANSPONDER E INMOVILIZADOR COMPATIBLE IDENTIFICADOS. CÓDIGO GENERADO EXITOSAMENTE.'
-        : 'DIAGNÓSTICO MAESTRO REALIZADO. CÓDIGO BCM Y TRANSPONDER PROGRAMADOS SIN ADAPTACIONES EXTRA.',
+      aiDiagnosis: diagnosisText.trim() || 'DIAGNÓSTICO REGISTRADO MANUALMENTE POR EL TÉCNICO.',
       status: 'ÉXITO',
-      image: capturedImage
+      image: capturedImage,
+      amount,
+      paymentMethod: method,
+      stripeSessionId,
     };
+  };
 
-    setHistory(prev => [newHistoryRecord, ...prev]);
-    setLastCreatedRecord(newHistoryRecord);
+  const finalizePayment = (record: DiagnosticRecord) => {
+    setRevenue(r => r + (record.amount ?? 0));
+    setHistory(prev => [record, ...prev]);
+    setLastCreatedRecord(record);
     setShowPaymentSuccess(true);
   };
 
+  const handleRecordManualPayment = (amount: number, method: Extract<PaymentMethod, 'efectivo' | 'zelle'>) => {
+    finalizePayment(buildRecordForPayment(amount, method));
+    setPaymentModalOpen(false);
+    setPaymentError(null);
+  };
+
+  const handleCardPayment = async (amount: number) => {
+    setPaymentBusy(true);
+    setPaymentError(null);
+    try {
+      const description = activeClient
+        ? `${activeClient.carInfo} — ${activeClient.issue}`.slice(0, 200)
+        : 'Servicio de cerrajería móvil';
+      const session = await createCheckoutSession(amount, description);
+      // Stripe redirige aquí; al volver, ?payment=success&session_id=... dispara
+      // el efecto de verificación y registro en el montaje.
+      window.location.assign(session.url);
+    } catch (err) {
+      setPaymentError(err instanceof StripeClientError ? err.message : 'No se pudo iniciar el cobro con tarjeta.');
+      setPaymentBusy(false);
+    }
+  };
+
+  // Verifica el retorno de Stripe Checkout y registra el pago una sola vez.
+  useEffect(() => {
+    const params = parsePaymentReturn(window.location.search);
+    if (params.status === null) return;
+
+    // Limpiar la URL inmediatamente para no reprocesar al recargar.
+    window.history.replaceState({}, document.title, window.location.pathname);
+
+    if (params.status === 'cancel') {
+      setVoiceToastMessage('❌ PAGO CON TARJETA CANCELADO — Puede volver a intentar el cobro.');
+      return;
+    }
+    if (!params.sessionId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const session = await verifySession(params.sessionId!);
+        if (cancelled) return;
+        if (session.paid) {
+          const alreadyRecorded = history.some(r => r.stripeSessionId === params.sessionId);
+          if (!alreadyRecorded) {
+            const amount = (session.amountTotal ?? 0) / 100;
+            finalizePayment(buildRecordForPayment(amount, 'tarjeta', params.sessionId));
+          }
+        } else {
+          setVoiceToastMessage('⚠️ EL PAGO AÚN NO SE HA CONFIRMADO POR STRIPE. Verifique más tarde en el historial.');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setVoiceToastMessage('⚠️ NO SE PUDO VERIFICAR EL PAGO. Si el cliente fue cobrado, regístrelo manualmente.');
+          console.error('Stripe verify error:', err);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Consulta una sola vez si los pagos con tarjeta están configurados.
+  useEffect(() => {
+    let cancelled = false;
+    isCardPaymentEnabled().then(enabled => {
+      if (!cancelled) setCardPaymentsEnabled(enabled);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ─── Exportación CSV / Respaldo completo ─────────────────────────────────
+
   const exportCSV = () => {
-    const headers = ["ID,Fecha,Cliente,Vehiculo,Problema,NotasTecnico,Diagnostico,Estado\n"];
-    const rows = history.map(h => 
-      `"${h.id}","${h.date}","${h.client}","${h.car}","${h.issue.replace(/"/g, '""')}","${(h.notes || '').replace(/"/g, '""')}","${h.aiDiagnosis.replace(/"/g, '""')}","${h.status}"`
+    downloadTextFile(
+      `Miami_AutoKey_Historial_${Date.now()}.csv`,
+      buildHistoryCsv(history),
+      'text/csv;charset=utf-8;'
     );
-    const blob = new Blob([headers.concat(rows.join("\n")).join("")], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `Miami_AutoKey_Historial_${Date.now()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  };
+
+  const exportBackup = () => {
+    const json = serializeBackup({ clients, inventory, history, revenue });
+    downloadTextFile(
+      `Miami_AutoKey_Respaldo_${new Date().toISOString().slice(0, 10)}.json`,
+      json,
+      'application/json'
+    );
+    setStorageWriteFailed(false);
+  };
+
+  const importBackup = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = String(event.target?.result || '');
+        const envelope = parseBackup(text);
+        const ok = window.confirm(
+          `Restaurar respaldo del ${new Date(envelope.exportedAt || Date.now()).toLocaleString()}?\n\n` +
+          `Esto REEMPLAZA los datos actuales:\n` +
+          `• ${envelope.data.clients.length} clientes\n` +
+          `• ${envelope.data.inventory.length} ítems de inventario\n` +
+          `• ${envelope.data.history.length} servicios en historial`
+        );
+        if (!ok) return;
+        setClients(envelope.data.clients);
+        setInventory(envelope.data.inventory);
+        setHistory(envelope.data.history);
+        setRevenue(envelope.data.revenue);
+        setActiveClient(null);
+        setVoiceToastMessage('✅ RESPALDO RESTAURADO CORRECTAMENTE');
+      } catch (err) {
+        window.alert(err instanceof BackupError ? err.message : 'No se pudo leer el archivo de respaldo.');
+      }
+    };
+    reader.readAsText(file);
   };
 
   const reorderCount = inventory.filter(i => i.stock <= 3).length;
+
+  const analytics = useMemo<AnalyticsSummary>(() => deriveAnalytics(history, revenue), [history, revenue]);
 
   const filteredInventory = inventory.filter(item => 
     item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -2156,16 +2254,55 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-full bg-black text-white font-sans overflow-hidden selection:bg-[#FFFF00] selection:text-black">
       {scannerOpen && <BarcodeScannerModal onScan={handleScan} onClose={() => setScannerOpen(false)} />}
-      {cameraOpen && <CameraCaptureModal onCapture={(imgUrl) => setCapturedImage(imgUrl)} onClose={() => setCameraOpen(false)} />}
+      {cameraOpen && (
+        <CameraCaptureModal
+          onCapture={async (imgUrl) => {
+            // Comprimir antes de guardar para no agotar la cuota de localStorage
+            setCapturedImage(await compressImage(imgUrl));
+          }}
+          onClose={() => setCameraOpen(false)}
+        />
+      )}
       {addInventoryOpen && <AddInventoryModal onAdd={handleAddInventory} onClose={() => setAddInventoryOpen(false)} />}
+
+      {paymentModalOpen && (
+        <PaymentModal
+          cardEnabled={cardPaymentsEnabled === true}
+          clientLabel={activeClient ? `${activeClient.firstName} ${activeClient.lastName}` : 'CLIENTE MOSTRADOR'}
+          busy={paymentBusy}
+          error={paymentError}
+          onClose={() => { setPaymentModalOpen(false); setPaymentError(null); }}
+          onManualPayment={handleRecordManualPayment}
+          onCardPayment={handleCardPayment}
+        />
+      )}
+
+      {/* Aviso de fallo de persistencia (cuota de localStorage excedida) */}
+      {storageWriteFailed && (
+        <div className="bg-red-600 text-white px-4 py-2 text-xs font-black uppercase tracking-wider flex items-center justify-between gap-3 shrink-0">
+          <span className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            Almacenamiento del navegador lleno: los últimos cambios podrían perderse. Exporte un respaldo ahora.
+          </span>
+          <button
+            type="button"
+            onClick={exportBackup}
+            className="bg-black text-[#FFFF00] px-3 py-1 font-black uppercase border border-black shrink-0"
+          >
+            Descargar Respaldo
+          </button>
+        </div>
+      )}
 
       {/* Stripe Payment Success Modal */}
       {showPaymentSuccess && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
           <div className="bg-[#FFFF00] text-black border-8 border-black p-8 max-w-md w-full text-center shadow-[12px_12px_0px_#fff]">
             <CheckCircle className="w-20 h-20 mx-auto mb-4 text-black animate-bounce" />
-            <h2 className="text-4xl font-black uppercase tracking-tighter mb-2">¡Pago Procesado!</h2>
-            <p className="text-xl font-bold uppercase tracking-wider mb-2">Servicio de $150.00 USD Cobrado con Éxito</p>
+            <h2 className="text-4xl font-black uppercase tracking-tighter mb-2">¡Pago Registrado!</h2>
+            <p className="text-xl font-bold uppercase tracking-wider mb-2">
+              ${((lastCreatedRecord?.amount ?? 0)).toFixed(2)} USD — {lastCreatedRecord?.paymentMethod?.toUpperCase() || 'COBRO'}
+            </p>
             <p className="text-xs font-black uppercase tracking-widest text-zinc-800 mb-6">Registrado en Historial y Ganancia Actualizada</p>
 
             <div className="flex flex-col gap-3">
@@ -2182,6 +2319,8 @@ export default function App() {
                   setShowPaymentSuccess(false);
                   setCapturedImage(null);
                   setActiveClient(null);
+                  setDiagnosisText('');
+                  setAiError(null);
                 }}
                 className="w-full bg-white text-black py-3 px-4 font-black uppercase text-sm tracking-wider border-2 border-black hover:bg-zinc-100 transition-colors"
               >
@@ -2283,6 +2422,15 @@ export default function App() {
               </div>
               
               <form onSubmit={handleRegister} className="mt-4 space-y-6">
+                {intakeErrors.length > 0 && (
+                  <div className="bg-red-950/60 border-2 border-red-600 p-3 space-y-1">
+                    {intakeErrors.map(err => (
+                      <p key={err} className="text-xs font-black uppercase text-red-300 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" /> {err}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-xs font-black text-[#FFFF00] uppercase tracking-widest mb-2">Nombre *</label>
@@ -2574,7 +2722,26 @@ export default function App() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto divide-y-4 divide-zinc-900">
-                  {filteredInventory.map(item => {
+                  {inventory.length === 0 ? (
+                    <div className="p-8 text-center">
+                      <PackageCheck className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
+                      <p className="text-sm font-black uppercase text-zinc-400">Inventario vacío</p>
+                      <p className="text-xs text-zinc-600 mt-1 uppercase font-bold mb-4">
+                        Agregue su primer ítem con el botón + para empezar a controlar el stock.
+                      </p>
+                      <button
+                        onClick={() => setAddInventoryOpen(true)}
+                        className="bg-[#FFFF00] text-black px-4 py-2 text-xs font-black uppercase tracking-widest border-2 border-black hover:bg-white transition-colors inline-flex items-center gap-2"
+                      >
+                        <Plus className="w-4 h-4" /> Agregar Ítem
+                      </button>
+                    </div>
+                  ) : filteredInventory.length === 0 ? (
+                    <div className="p-8 text-center text-zinc-500 font-bold uppercase">
+                      No hay ítems que coincidan con "{searchQuery}"
+                    </div>
+                  ) : (
+                  filteredInventory.map(item => {
                     const isLow = item.stock < 3;
                     return (
                       <div 
@@ -2611,7 +2778,8 @@ export default function App() {
                         </div>
                       </div>
                     );
-                  })}
+                  })
+                  )}
                 </div>
               </section>
 
@@ -2736,7 +2904,7 @@ export default function App() {
               <div className="flex-1 border-4 border-dashed border-zinc-700 p-6 md:p-8 flex flex-col relative bg-zinc-950 min-h-[300px]">
                 <div className="absolute -top-4 left-6 bg-black px-2">
                   <span className="text-[#FFFF00] font-black uppercase tracking-widest text-xs md:text-sm flex items-center gap-2">
-                    <Sparkles className="w-4 h-4" /> Diagnóstico del Maestro Mecánico
+                    <Sparkles className="w-4 h-4" /> Diagnóstico Asistido por IA (Gemini)
                   </span>
                 </div>
                 
@@ -2745,8 +2913,8 @@ export default function App() {
                   <div className="mb-6 p-4 bg-black border-2 border-[#FFFF00] flex items-center gap-4">
                     <img src={capturedImage} alt="Captured Key/Module" className="w-24 h-24 object-cover border border-zinc-700" />
                     <div>
-                      <span className="text-xs font-black uppercase text-[#FFFF00] tracking-widest">Análisis de Imagen AI</span>
-                      <p className="text-lg font-black uppercase">Llave Transponder & Chip Reconocidos</p>
+                      <span className="text-xs font-black uppercase text-[#FFFF00] tracking-widest">Foto Adjunta al Diagnóstico</span>
+                      <p className="text-sm font-black uppercase">La imagen se enviará al análisis de IA</p>
                       <button 
                         onClick={() => setCapturedImage(null)}
                         className="text-xs font-bold text-red-500 uppercase underline mt-1"
@@ -2757,12 +2925,12 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="space-y-6 mt-2">
+                <div className="space-y-4 mt-2">
                   <div className="flex gap-4">
                     <div className="w-10 h-10 shrink-0 bg-[#FFFF00] flex items-center justify-center text-black font-black text-lg">01</div>
                     <div>
-                      <p className="text-lg md:text-xl font-bold italic leading-tight uppercase text-white">
-                        {activeClient?.carInfo ? `Analizando inmovilizador para: ${activeClient.carInfo}` : 'Seleccione o ingrese un vehículo para iniciar lectura OBD2/Chip.'}
+                      <p className="text-base md:text-lg font-bold italic leading-tight uppercase text-white">
+                        {activeClient?.carInfo ? `Vehículo: ${activeClient.carInfo}` : 'Registre un cliente para dar contexto a la IA.'}
                       </p>
                     </div>
                   </div>
@@ -2770,20 +2938,41 @@ export default function App() {
                   <div className="flex gap-4">
                     <div className="w-10 h-10 shrink-0 bg-white flex items-center justify-center text-black font-black text-lg">02</div>
                     <div>
-                      <p className="text-lg md:text-xl font-bold leading-tight uppercase text-white">
-                        {activeClient?.issue ? `Reporte de falla: "${activeClient.issue}"` : 'Use "Tomar Foto AI" o "Describir Voz" para alimentar el modelo.'}
+                      <p className="text-base md:text-lg font-bold leading-tight uppercase text-white line-clamp-2">
+                        {activeClient?.issue ? `Falla reportada: "${activeClient.issue.slice(0, 120)}${activeClient.issue.length > 120 ? '…' : ''}"` : 'Use "Tomar Foto AI" o el dictado de voz para alimentar el modelo.'}
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex gap-4 opacity-70">
-                    <div className="w-10 h-10 shrink-0 bg-zinc-800 flex items-center justify-center text-[#FFFF00] font-black text-lg">03</div>
-                    <div>
-                      <p className="text-lg md:text-xl font-bold leading-tight uppercase text-zinc-300">
-                        {capturedImage 
-                          ? 'Procedimiento listo: Programar Chip ID46/ID4C vía puerto OBD2 con KM100 / IM608.' 
-                          : 'Esperando datos adicionales de entrada...'}
-                      </p>
+                  <div className="flex gap-4">
+                    <div className="w-10 h-10 shrink-0 bg-[#FFFF00] flex items-center justify-center text-black font-black text-lg">03</div>
+                    <div className="flex-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-black uppercase text-[#FFFF00] tracking-widest">
+                          Diagnóstico (editable — se guarda en el ticket)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleGenerateDiagnosis}
+                          disabled={aiLoading}
+                          className="bg-[#FFFF00] disabled:bg-zinc-800 disabled:text-zinc-500 text-black px-4 py-2 text-xs font-black uppercase tracking-wider border-2 border-black hover:bg-white transition-colors flex items-center gap-2"
+                        >
+                          {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                          {aiLoading ? 'Analizando...' : 'Generar con IA'}
+                        </button>
+                      </div>
+                      <textarea
+                        value={diagnosisText}
+                        onChange={e => { setDiagnosisText(e.target.value); setAiError(null); }}
+                        placeholder={'Presione "Generar con IA" para el análisis automático, o escriba aquí su diagnóstico manual (chip, herramienta, procedimiento)...'}
+                        className="w-full bg-black border-2 border-zinc-800 focus:border-[#FFFF00] p-3 text-sm font-bold text-white focus:outline-none min-h-[140px] resize-y placeholder:text-zinc-600 leading-relaxed transition-colors"
+                      />
+                      {aiError && (
+                        <div className="mt-2 bg-amber-950/40 border-2 border-amber-600/50 p-2.5 text-[11px] font-bold text-amber-200 uppercase flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                          {aiError}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2792,20 +2981,20 @@ export default function App() {
                   <div className="flex flex-col">
                     <span className="text-xs font-black uppercase text-zinc-500 tracking-widest">Vehículo Seleccionado</span>
                     <span className="text-xl md:text-2xl font-black uppercase text-[#FFFF00]">
-                      {activeClient?.carInfo || 'TOYOTA COROLLA 2003 CE'}
+                      {activeClient?.carInfo || 'SIN CLIENTE ACTIVO'}
                     </span>
                   </div>
                   <button 
-                    onClick={handleStripePayment}
+                    onClick={() => setPaymentModalOpen(true)}
                     className="w-full md:w-auto bg-green-500 hover:bg-green-400 text-black px-8 py-4 font-black text-xl uppercase tracking-tighter shadow-[4px_4px_0px_#fff] transition-all active:translate-y-1 active:shadow-none flex items-center justify-center gap-2"
                   >
-                    <CreditCard className="w-6 h-6" /> Cobrar con Stripe ($150)
+                    <CreditCard className="w-6 h-6" /> Cobrar Servicio
                   </button>
                 </div>
               </div>
 
               {/* Recharts Analytics Dashboard */}
-              <DashboardAnalyticsChart />
+              <DashboardAnalyticsChart analytics={analytics} />
             </section>
           </div>
         </div>
@@ -2813,15 +3002,40 @@ export default function App() {
           <section className="flex-1 overflow-y-auto p-6 md:p-8 bg-zinc-950 flex flex-col">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
               <div>
-                <h2 className="text-3xl font-black uppercase tracking-tighter text-[#FFFF00]">Historial y Aprendizaje AI</h2>
-                <p className="text-sm font-bold uppercase tracking-widest text-zinc-400 mt-1">Exporta datos para entrenar modelos locales</p>
+                <h2 className="text-3xl font-black uppercase tracking-tighter text-[#FFFF00]">Historial de Servicios</h2>
+                <p className="text-sm font-bold uppercase tracking-widest text-zinc-400 mt-1">Registros de cobros y diagnósticos</p>
               </div>
-              <button 
-                onClick={exportCSV}
-                className="bg-[#FFFF00] text-black px-6 py-3 font-black uppercase tracking-widest shadow-[4px_4px_0px_#fff] hover:bg-white transition-colors flex items-center gap-2"
-              >
-                <Download className="w-5 h-5" /> Exportar CSV
-              </button>
+              <div className="flex flex-col md:flex-row gap-3">
+                <button 
+                  onClick={exportCSV}
+                  className="bg-[#FFFF00] text-black px-6 py-3 font-black uppercase tracking-widest shadow-[4px_4px_0px_#fff] hover:bg-white transition-colors flex items-center justify-center gap-2"
+                >
+                  <Download className="w-5 h-5" /> Exportar CSV
+                </button>
+                <button 
+                  onClick={exportBackup}
+                  className="bg-zinc-900 text-white px-6 py-3 font-black uppercase tracking-widest border-2 border-zinc-700 hover:border-[#FFFF00] transition-colors flex items-center justify-center gap-2"
+                  title="Descarga un respaldo completo (JSON) de clientes, inventario, historial y ganancias"
+                >
+                  <Save className="w-5 h-5 text-[#FFFF00]" /> Respaldar Todo
+                </button>
+                <label 
+                  className="bg-zinc-900 text-white px-6 py-3 font-black uppercase tracking-widest border-2 border-zinc-700 hover:border-[#FFFF00] transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                  title="Restaurar datos desde un archivo de respaldo JSON"
+                >
+                  <Upload className="w-5 h-5 text-[#FFFF00]" /> Restaurar
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (file) importBackup(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
             </div>
 
             {/* Search Input Bar */}

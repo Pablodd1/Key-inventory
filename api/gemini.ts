@@ -1,15 +1,47 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GoogleGenAI } from '@google/genai';
+import { rateLimit } from './_lib';
 
 // Serverless proxy to keep GEMINI_API_KEY server-side.
 // Client: POST /api/gemini { prompt: string, imageBase64?: string, mimeType?: string, history?: {role:string, parts:{text:string}[]}[] }
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
+
+interface ChatTurn {
+  role: string;
+  parts: { text: string }[];
+}
+
+function sanitizeHistory(history: unknown): ChatTurn[] {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter(
+      (turn): turn is ChatTurn =>
+        turn !== null &&
+        typeof turn === 'object' &&
+        (turn as any).role === ((turn as any).role === 'model' ? 'model' : 'user') &&
+        Array.isArray((turn as any).parts)
+    )
+    .slice(-10) // solo las últimas 10 iteraciones para acotar costos
+    .map(turn => ({
+      role: turn.role === 'model' ? 'model' : 'user',
+      parts: turn.parts
+        .filter((p: any) => p && typeof p.text === 'string' && p.text.length > 0 && p.text.length <= 8000)
+        .map((p: any) => ({ text: p.text })),
+    }))
+    .filter(turn => turn.parts.length > 0);
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Cache-Control', 'no-store');
+
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed, use POST' });
+  }
+  if (!rateLimit(req, 'gemini')) {
+    return res.status(429).json({ error: 'Too many requests' });
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -30,6 +62,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (imageBase64 && imageBase64.length > 7_000_000) {
     return res.status(400).json({ error: 'Image too large (max ~5MB base64)' });
   }
+  const mime = typeof mimeType === 'string' && ALLOWED_MIME_TYPES.has(mimeType.toLowerCase())
+    ? mimeType.toLowerCase()
+    : 'image/jpeg';
 
   try {
     const ai = new GoogleGenAI({ apiKey });
@@ -39,14 +74,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (imageBase64) {
       parts.push({
         inlineData: {
-          mimeType: mimeType || 'image/jpeg',
+          mimeType: mime,
           data: imageBase64.replace(/^data:[^;]+;base64,/, ''),
         },
       });
     }
 
-    const contents = history && Array.isArray(history) && history.length > 0
-      ? [...history, { role: 'user', parts }]
+    const sanitizedHistory = sanitizeHistory(history);
+    const contents = sanitizedHistory.length > 0
+      ? [...sanitizedHistory, { role: 'user', parts }]
       : [{ role: 'user', parts }];
 
     const result = await ai.models.generateContent({
