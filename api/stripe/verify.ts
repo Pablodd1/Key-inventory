@@ -31,7 +31,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed, use POST' });
   }
-  if (!rateLimit(req, 'stripe-verify')) {
+  if (!rateLimit(req)) {
     return res.status(429).json({ error: 'Too many requests' });
   }
 
