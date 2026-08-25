@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Stripe from 'stripe';
-import { rateLimit } from '../_lib';
+import { rateLimit } from '../../server/ratelimit';
 
 // Verifica del lado del servidor el estado de una Checkout Session
 // después del redirect de vuelta a la app.

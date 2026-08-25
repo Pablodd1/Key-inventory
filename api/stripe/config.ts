@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rateLimit } from '../_lib';
+import { rateLimit } from '../../server/ratelimit';
 
 // Permite a la UI saber si los pagos con tarjeta están activos
 // sin exponer ninguna clave.

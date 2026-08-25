@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GoogleGenAI } from '@google/genai';
-import { rateLimit } from './_lib';
+import { rateLimit } from '../server/ratelimit';
 
 // Serverless proxy to keep GEMINI_API_KEY server-side.
 // Client: POST /api/gemini { prompt: string, imageBase64?: string, mimeType?: string, history?: {role:string, parts:{text:string}[]}[] }

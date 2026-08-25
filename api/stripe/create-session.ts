@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Stripe from 'stripe';
-import { rateLimit } from '../_lib';
+import { rateLimit } from '../../server/ratelimit';
 
 // Crea una Stripe Checkout Session para cobrar un servicio en campo.
 // Client: POST /api/stripe/create-session { amountCents: number, description: string }

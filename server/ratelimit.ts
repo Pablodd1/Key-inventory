@@ -1,8 +1,10 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelRequest } from '@vercel/node';
 
 // Límite de peticiones en memoria por instancia cálida (mejor esfuerzo).
 // En serverless cada instancia reinicia su contador; esto frena abusos
 // ligeros, no ataques dedicados.
+// NOTA: este archivo vive fuera de api/ porque Vercel excluye los archivos
+// con prefijo "_" del bundle de funciones.
 const WINDOW_MS = 60_000;
 const MAX_REQUESTS = 30;
 
