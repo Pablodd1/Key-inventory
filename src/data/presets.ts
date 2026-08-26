@@ -1,4 +1,5 @@
 import type { CarPreset } from '../lib/types';
+import { US_GENERATED } from './usPresets.generated';
 
 // Fichas técnicas de cerrajería para los vehículos más comunes en Miami.
 // Datos de referencia para profesionales; ante duda de año exacto, verificar
@@ -521,12 +522,17 @@ export const PRESET_CAR_MODELS: CarPreset[] = [
   ...VOLKSWAGEN,
   ...MAZDA_MITSUBISHI,
   ...GM_OTHER,
+  ...US_GENERATED,
 ];
 
 /** Marca (para agrupar el selector por marca) derivada del nombre del modelo. */
 export function presetBrand(preset: CarPreset): string {
+  const upper = preset.model.toUpperCase();
+  // Marcas de dos palabras deben probarse primero
+  const multi = ['ALFA ROMEO','ASTON MARTIN','LAND ROVER','MERCEDES-BENZ'];
+  for (const m of multi) if (upper.includes(` ${m} `) || upper.includes(` ${m}`)) return m;
   const brand = preset.model.split(' ').slice(1, -1).find(w =>
-    /^(TOYOTA|HONDA|NISSAN|FORD|CHEVROLET|HYUNDAI|KIA|JEEP|DODGE|RAM|VOLKSWAGEN|MAZDA|MITSUBISHI|GMC|BUICK)$/i.test(w)
+    /^(ACURA|AUDI|BENTLEY|BMW|BUICK|CADILLAC|CHEVROLET|CHRYSLER|DODGE|FIAT|FORD|GENESIS|GMC|HONDA|HYUNDAI|INFINITI|JAGUAR|JEEP|KIA|LEXUS|LINCOLN|MASERATI|MAZDA|MERCURY|MINI|MITSUBISHI|NISSAN|PORSCHE|RAM|SUBARU|TESLA|TOYOTA|VOLKSWAGEN|VOLVO)$/i.test(w)
   );
   return brand || 'OTROS';
 }
@@ -536,4 +542,6 @@ export const PRESET_BRAND_ORDER: string[] = [
   'TOYOTA', 'HONDA', 'NISSAN', 'FORD', 'CHEVROLET',
   'HYUNDAI', 'KIA', 'JEEP', 'DODGE', 'RAM',
   'VOLKSWAGEN', 'MAZDA', 'MITSUBISHI', 'GMC', 'BUICK',
+  'ACURA','AUDI','BMW','CADILLAC','CHRYSLER','FIAT','GENESIS','INFINITI','LEXUS','TESLA','SUBARU',
+  'ALFA ROMEO','ASTON MARTIN','BENTLEY','JAGUAR','LAND ROVER','MASERATI','MERCEDES-BENZ','MERCURY','MINI','PORSCHE','VOLVO',
 ];

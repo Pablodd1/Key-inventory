@@ -6,7 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 // NOTA: sin imports relativos locales — el runtime ESM de las funciones no
 // resuelve especificadores sin extensión y @vercel/node no los empaqueta.
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 
 // Rate limit en memoria por instancia cálida (mejor esfuerzo).
@@ -113,10 +113,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       model: MODEL,
       contents,
       config: {
-        // Keep field ops safe and concise
-        temperature: 0.4,
+        // Gemini 3.7 Flash: temperature/top_p/top_k deprecated — use thinkingLevel
+        // "medium" balances field speed + reasoning for immobilizer diagnostics
+        thinkingLevel: 'medium' as any,
         maxOutputTokens: 2048,
-      },
+      } as any,
     });
 
     const text = (result as any).text ?? (result as any).candidates?.[0]?.content?.parts?.[0]?.text ?? '';
